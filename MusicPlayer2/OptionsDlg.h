@@ -7,6 +7,7 @@
 #include "CHotKeySettingDlg.h"
 #include "MediaLibSettingDlg.h"
 #include "BaseDialog.h"
+#include "ServerSettingsDlg.h"
 
 // COptionsDlg 对话框
 #define TIMER_ID2 1122
@@ -28,6 +29,7 @@ public:
 	CMediaLibSettingDlg m_media_lib_dlg{ this };		//“媒体库”子对话框
 
 	int m_tab_selected{};
+	CServerSettingsDlg m_server_dlg{ this };
 
 // 对话框数据
 #ifdef AFX_DESIGN_TIME

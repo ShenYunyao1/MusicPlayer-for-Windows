@@ -198,6 +198,9 @@ BOOL CMediaLibDlg::OnInitDialog()
     }
 
     m_tab_ctrl.SetItemSize(CSize(theApp.DPI(60), theApp.DPI(24)));
+    m_server_dlg = new CServerLibraryDlg();
+    m_server_dlg->Create(IDD_SERVER_LIBRARY);
+    m_tab_ctrl.AddWindow(m_server_dlg, L"\x670d\x52a1\x5668", IconMgr::IconType::IT_Media_Lib);
     m_tab_ctrl.AdjustTabWindowSize();
 
     //如果要显示的标签序号无效，则保持上次的标签
@@ -270,6 +273,7 @@ void CMediaLibDlg::OnDestroy()
     if (m_all_media_dlg != nullptr) { m_all_media_dlg->DestroyWindow(); delete m_all_media_dlg; m_all_media_dlg = nullptr; }
     if (m_recent_media_dlg != nullptr) { m_recent_media_dlg->DestroyWindow(); delete m_recent_media_dlg; m_recent_media_dlg = nullptr; }
     if (m_folder_explore_dlg != nullptr) { m_folder_explore_dlg->DestroyWindow(); delete m_folder_explore_dlg; m_folder_explore_dlg = nullptr; }
+    if (m_server_dlg != nullptr) { m_server_dlg->DestroyWindow(); delete m_server_dlg; m_server_dlg = nullptr; }
 }
 
 

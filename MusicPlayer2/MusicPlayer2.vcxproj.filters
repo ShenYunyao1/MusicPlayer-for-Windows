@@ -546,6 +546,13 @@
     <ClInclude Include="MusicPlayer2.h">
       <Filter>MusicPlayer2</Filter>
     </ClInclude>
+    <ClInclude Include="RemoteLibraryClient.h">
+      <Filter>公共的类</Filter>
+    </ClInclude>
+    <ClInclude Include="RemoteLibraryConfig.h"><Filter>公共的类</Filter></ClInclude>
+    <ClInclude Include="RemoteLibraryResource.h"><Filter>资源文件</Filter></ClInclude>
+    <ClInclude Include="ServerSettingsDlg.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="ServerLibraryDlg.h"><Filter>头文件</Filter></ClInclude>
     <ClInclude Include="MusicPlayerDlg.h">
       <Filter>MusicPlayerDlg</Filter>
     </ClInclude>
@@ -1280,6 +1287,12 @@
     <ClCompile Include="MusicPlayer2.cpp">
       <Filter>MusicPlayer2</Filter>
     </ClCompile>
+    <ClCompile Include="RemoteLibraryClient.cpp">
+      <Filter>公共的类</Filter>
+    </ClCompile>
+    <ClCompile Include="RemoteLibraryConfig.cpp"><Filter>公共的类</Filter></ClCompile>
+    <ClCompile Include="ServerSettingsDlg.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="ServerLibraryDlg.cpp"><Filter>源文件</Filter></ClCompile>
     <ClCompile Include="MusicPlayerDlg.cpp">
       <Filter>MusicPlayerDlg</Filter>
     </ClCompile>
@@ -1948,6 +1961,7 @@
     <ResourceCompile Include="MusicPlayer2.rc">
       <Filter>资源文件</Filter>
     </ResourceCompile>
+    <ResourceCompile Include="RemoteLibrary.rc"><Filter>资源文件</Filter></ResourceCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="res\MusicPlayer2.rc2">

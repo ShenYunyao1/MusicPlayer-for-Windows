@@ -6,6 +6,7 @@
 #include "MediaClassifyDlg.h"
 #include "FolderExploreDlg.h"
 #include "AllMediaDlg.h"
+#include "ServerLibraryDlg.h"
 
 // CMediaLibDlg 对话框
 
@@ -35,6 +36,7 @@ public:
     CAllMediaDlg* m_all_media_dlg{};
     CAllMediaDlg* m_recent_media_dlg{};
     CFolderExploreDlg* m_folder_explore_dlg{};
+    CServerLibraryDlg* m_server_dlg{};
 
     void SetCurTab(int tab);
 

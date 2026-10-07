@@ -74,6 +74,7 @@ BOOL COptionsDlg::OnInitDialog()
 	m_tab4_dlg.Create(IDD_PLAY_SETTING_DIALOG);
 	m_media_lib_dlg.Create(IDD_MEDIA_LIB_SETTING_DIALOG);
 	m_tab5_dlg.Create(IDD_HOT_KEY_SETTINGS_DIALOG);
+	m_server_dlg.Create(IDD_SERVER_SETTINGS);
 
 	//保存子对话框
 	m_tab_vect.push_back(&m_tab1_dlg);
@@ -82,6 +83,7 @@ BOOL COptionsDlg::OnInitDialog()
 	m_tab_vect.push_back(&m_tab4_dlg);
 	m_tab_vect.push_back(&m_media_lib_dlg);
 	m_tab_vect.push_back(&m_tab5_dlg);
+	m_tab_vect.push_back(&m_server_dlg);
 
 	//获取子对话框的初始高度
 	for (const auto* pDlg : m_tab_vect)
@@ -98,6 +100,7 @@ BOOL COptionsDlg::OnInitDialog()
     m_tab.AddWindow(&m_tab4_dlg, theApp.m_str_table.LoadText(L"TITLE_OPT_PLAY").c_str(), IconMgr::IconType::IT_Play);
     m_tab.AddWindow(&m_media_lib_dlg, theApp.m_str_table.LoadText(L"TITLE_OPT_MEDIA_LIB").c_str(), IconMgr::IconType::IT_Media_Lib);
     m_tab.AddWindow(&m_tab5_dlg, theApp.m_str_table.LoadText(L"TITLE_OPT_HOT_KEY").c_str(), IconMgr::IconType::IT_Key_Board);
+    m_tab.AddWindow(&m_server_dlg, L"\x670d\x52a1\x5668", IconMgr::IconType::IT_Media_Lib);
 
     m_tab.SetItemSize(CSize(theApp.DPI(60), theApp.DPI(24)));
     m_tab.AdjustTabWindowSize();

@@ -469,6 +469,11 @@
     <ClInclude Include="PlayListCtrl.h" />
     <ClInclude Include="Lyric.h" />
     <ClInclude Include="MusicPlayer2.h" />
+    <ClInclude Include="RemoteLibraryClient.h" />
+    <ClInclude Include="RemoteLibraryConfig.h" />
+    <ClInclude Include="RemoteLibraryResource.h" />
+    <ClInclude Include="ServerSettingsDlg.h" />
+    <ClInclude Include="ServerLibraryDlg.h" />
     <ClInclude Include="MusicPlayerDlg.h" />
     <ClInclude Include="OptionsDlg.h" />
     <ClInclude Include="Player.h" />
@@ -718,7 +723,11 @@
     <ClCompile Include="PlayListCtrl.cpp" />
     <ClCompile Include="Lyric.cpp" />
     <ClCompile Include="MusicPlayer2.cpp" />
+    <ClCompile Include="RemoteLibraryClient.cpp" />
     <ClCompile Include="MusicPlayerDlg.cpp" />
+    <ClCompile Include="RemoteLibraryConfig.cpp" />
+    <ClCompile Include="ServerSettingsDlg.cpp" />
+    <ClCompile Include="ServerLibraryDlg.cpp" />
     <ClCompile Include="OptionsDlg.cpp" />
     <ClCompile Include="Player.cpp" />
     <ClCompile Include="LyricSettingsDlg.cpp" />
@@ -735,6 +744,7 @@
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="MusicPlayer2.rc" />
+    <ResourceCompile Include="RemoteLibrary.rc" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\LICENSE" />
