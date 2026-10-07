@@ -57,6 +57,31 @@ namespace
         });
     }
 
+    bool ValidHash(const std::string& value)
+    {
+        return value.size() == 64 && std::all_of(value.begin(), value.end(), [](char character) {
+            return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
+        });
+    }
+
+    std::wstring CoverExtension(const std::string& mime)
+    {
+        // These are the server image formats supported by CImage and the
+        // player's same-basename artwork lookup. WebP is not decoded by CImage.
+        if (mime == "image/jpeg") return L".jpg";
+        if (mime == "image/png") return L".png";
+        if (mime == "image/gif") return L".gif";
+        return {};
+    }
+
+    bool FileHasHash(const std::filesystem::path& path, const std::string& hash)
+    {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error)) return false;
+        std::ifstream input(path, std::ios::binary);
+        return input && HashStream(input) == hash;
+    }
+
     std::wstring Utf8ToWide(const std::string& value)
     {
         if (value.empty())
@@ -99,6 +124,9 @@ namespace
         track.comment = JsonString(value, "comment");
         track.genre = JsonString(value, "genre");
         track.content_hash = value.value("content_hash", "");
+        track.cover_id = value.value("cover_id", "");
+        track.cover_mime = value.value("cover_mime", "");
+        track.cover_source = value.value("cover_source", "");
         track.format = value.value("format", "mp3");
         track.path = value.value("path", "");
         track.size = value.value("size", static_cast<unsigned __int64>(0));
@@ -265,6 +293,27 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
             RemoteTrack track = ParseTrack(value);
             tracks.emplace(track.id, std::move(track));
         }
+        if (received)
+        {
+            // Refresh artwork for audio already cached, including removal in
+            // a new snapshot. Offline snapshots retain their verified artwork.
+            std::error_code file_error;
+            for (const auto& entry : tracks)
+            {
+                const std::wstring cached_path = CachePath(entry.second);
+                if (!cached_path.empty() && std::filesystem::is_regular_file(cached_path, file_error))
+                    EnsureCoverCached(entry.second, cached_path);
+            }
+            if (saved.is_object() && saved.contains("changed_tracks") && saved["changed_tracks"].is_array())
+                for (const auto& value : saved["changed_tracks"])
+                {
+                    RemoteTrack previous = ParseTrack(value);
+                    if (tracks.find(previous.id) != tracks.end()) continue;
+                    const std::wstring cached_path = CachePath(previous);
+                    previous.cover_id.clear();
+                    if (!cached_path.empty()) EnsureCoverCached(previous, cached_path);
+                }
+        }
         for (const auto& value : snapshot["playlists"])
         {
             RemotePlaylist playlist;
@@ -359,7 +408,35 @@ bool CRemoteLibraryClient::EnsureCached(const RemoteTrack& track, std::wstring& 
         if (!lyrics) { error_message = L"保存歌词失败"; return false; }
     }
     else std::filesystem::remove(lyrics_path, file_error);
+    EnsureCoverCached(track, cached_path);
     return true;
+}
+
+void CRemoteLibraryClient::EnsureCoverCached(const RemoteTrack& track, const std::wstring& cached_path) const
+{
+    const std::wstring extension = CoverExtension(track.cover_mime);
+    std::filesystem::path target(cached_path);
+    if (!extension.empty()) target.replace_extension(extension);
+    const bool wanted = ValidHash(track.cover_id) && !extension.empty();
+    std::error_code file_error;
+    bool verified = wanted && FileHasHash(target, track.cover_id);
+    // Never leave stale art selected after a server-side change or removal.
+    for (const wchar_t* candidate : {L".jpg", L".jpeg", L".png", L".gif", L".bmp", L".webp"})
+    {
+        std::filesystem::path previous(cached_path);
+        previous.replace_extension(candidate);
+        if (!verified || previous != target)
+            std::filesystem::remove(previous, file_error);
+    }
+    if (!wanted || verified || (m_cancel && *m_cancel)) return;
+    const std::wstring temporary = target.wstring() + L".download";
+    std::string ignored;
+    std::wstring error;
+    // Artwork is optional: a network/permission failure never blocks playback.
+    bool downloaded = Download(L"/api/v1/covers/" + Utf8ToWide(track.cover_id), ignored, error, temporary, 8 * 1024 * 1024);
+    if (downloaded && FileHasHash(temporary, track.cover_id))
+        MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    std::filesystem::remove(temporary, file_error);
 }
 
 bool CRemoteLibraryClient::Request(const std::wstring& path, std::string& response, std::wstring& error_message) const
@@ -414,7 +491,7 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
         WinHttpCloseHandle(session);
         return false;
     }
-    std::wstring headers = L"Accept: application/json, audio/*\r\n";
+    std::wstring headers = L"Accept: application/json, audio/*, image/*\r\n";
     DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
     WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy, sizeof(redirect_policy));
     if (!m_api_key.empty())
@@ -485,7 +562,7 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
 
 std::wstring CRemoteLibraryClient::CachePath(const RemoteTrack& track) const
 {
-    if (m_cache_directory.empty() || track.content_hash.size() != 64 || !ValidId(track.id) || !ValidId(track.format) || track.format.size() > 8 || !std::all_of(track.content_hash.begin(), track.content_hash.end(), [](char character) { return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'); }))
+    if (m_cache_directory.empty() || !ValidHash(track.content_hash) || !ValidId(track.id) || !ValidId(track.format) || track.format.size() > 8)
         return {};
     return (std::filesystem::path(m_cache_directory) / (Utf8ToWide(track.content_hash) + L"." + Utf8ToWide(track.format))).wstring();
 }

@@ -16,6 +16,9 @@ struct RemoteTrack
     std::wstring comment;
     std::wstring genre;
     std::string content_hash;
+    std::string cover_id;
+    std::string cover_mime;
+    std::string cover_source;
     std::string format;
     std::string path;
     unsigned __int64 size{};
@@ -49,6 +52,7 @@ private:
     bool Request(const std::wstring& path, std::string& response, std::wstring& error_message) const;
     bool Download(const std::wstring& path, std::string& response, std::wstring& error_message, const std::wstring& destination = L"", unsigned __int64 maximum = 16 * 1024 * 1024) const;
     std::wstring CachePath(const RemoteTrack& track) const;
+    void EnsureCoverCached(const RemoteTrack& track, const std::wstring& cached_path) const;
 
     std::wstring m_base_url;
     std::string m_api_key;
