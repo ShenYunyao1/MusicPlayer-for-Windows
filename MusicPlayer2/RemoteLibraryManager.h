@@ -34,7 +34,9 @@ public:
     std::shared_ptr<RemoteLibraryTask> Library(bool refresh = false);
     std::shared_ptr<RemoteLibraryTask> Prepare(const std::wstring& path, bool allow_network);
     std::shared_ptr<RemoteLibraryTask> SaveOffline(const RemotePlaylist& playlist);
-    bool Materialize(const RemotePlaylist& playlist, std::wstring& path, std::wstring& error);
+    bool Materialize(const RemotePlaylist& playlist, const std::wstring& preferred_path,
+        std::wstring& path, std::wstring& error);
+    std::vector<std::wstring> MaterializedPaths(const RemotePlaylist& playlist) const;
     bool LoadPlaylist(const std::wstring& path);
     bool ApplyMetadata(SongInfo& song);
     bool IsRemote(const std::wstring& path);

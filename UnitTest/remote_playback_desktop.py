@@ -30,6 +30,10 @@ u.GetDlgCtrlID.argtypes = [w.HWND]
 u.GetWindowTextW.argtypes = [w.HWND, w.LPWSTR, c.c_int]
 u.GetParent.argtypes = [w.HWND]
 u.GetParent.restype = w.HWND
+u.GetDlgItem.argtypes = [w.HWND, c.c_int]
+u.GetDlgItem.restype = w.HWND
+u.SetWindowTextW.argtypes = [w.HWND, w.LPCWSTR]
+u.SetWindowTextW.restype = w.BOOL
 u.IsWindowVisible.argtypes = [w.HWND]
 u.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
 u.SendMessageTimeoutW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM, w.UINT, w.UINT, c.POINTER(c.c_size_t)]
@@ -81,6 +85,17 @@ def wav(number, seconds=3):
         # Quiet valid PCM; distinct content identities without audible noise.
         f.writeframes(bytes([number, 0]) * (8000 * seconds))
     return out.getvalue()
+
+
+def remote_manifests(output, playlist_id):
+    matches = []
+    for path in (output / "playlist").glob("server-*.playlist.remote.json"):
+        try:
+            if json.loads(path.read_text(encoding="utf-8")).get("id") == playlist_id:
+                matches.append(path)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return matches
 
 
 class Fixture(ThreadingHTTPServer):
@@ -176,6 +191,9 @@ class Desktop:
         u.EnumWindows(callback, 0)
         for hwnd, _, _ in list(windows):
             u.EnumChildWindows(hwnd, callback, 0)
+        assertions = [name for _, name, _ in windows if "Debug Assertion Failed" in name]
+        if assertions:
+            raise AssertionError("Player debug assertion: " + "\n".join(assertions))
         return windows
 
     def control(self, number):
@@ -183,7 +201,7 @@ class Desktop:
 
     def send(self, hwnd, message, wp=0, lp=0):
         result = c.c_size_t()
-        if not u.SendMessageTimeoutW(hwnd, message, wp, lp, 2, 1500, c.byref(result)):
+        if not u.SendMessageTimeoutW(hwnd, message, wp, lp, 2, 5000, c.byref(result)):
             raise AssertionError("UI did not respond: " + str(message))
         return result.value
 
@@ -216,7 +234,11 @@ class Desktop:
 
     def library(self):
         self.command(32793)
-        tab = until(lambda: self.control(1083), "library tab")
+        until(lambda: self.control(1083), "library tab")
+        self.server_tab()
+
+    def server_tab(self):
+        tab = self.control(1083)
         count = self.send(tab, 4868)
         # Let the tab control generate its own in-process notifications.
         self.send(tab, 4912, count - 1)  # TCM_SETCURFOCUS
@@ -226,6 +248,28 @@ class Desktop:
         hwnd = self.control(8106)
         self.send(hwnd, 390, row)
         self.send(u.GetParent(hwnd), 273, 8106 | (1 << 16), hwnd)
+
+    def local_playlist_tracks(self, name):
+        tab = self.control(1083)
+        self.send(tab, 4912, 1)  # Media Library's Playlist tab.
+        songs = until(lambda: next((hwnd for hwnd, _, ident in self.windows()
+                                   if ident == 1159 and u.IsWindowVisible(u.GetParent(hwnd))), 0), "local playlist song list")
+        playlists = u.GetDlgItem(u.GetParent(songs), 1002)
+        row = next((i for i in range(self.send(playlists, 4100))
+                    if self.text_on(playlists, i, 1) == name), -1)
+        assert row >= 0, "linked local playlist visible"
+        search = u.GetDlgItem(u.GetParent(songs), 1103)
+        assert u.SetWindowTextW(search, name), "filter linked playlist"
+        until(lambda: self.send(songs, 4100) > 0, "local playlist tracks")
+        return songs
+
+    def text_on(self, hwnd, row, col=0):
+        item = Item(mask=1, row=row, col=col, text=self.buffer + 256, capacity=1000)
+        self.write(item)
+        self.send(hwnd, 4171, row, self.buffer)
+        value = c.create_unicode_buffer(1000)
+        assert k.ReadProcessMemory(self.handle, self.buffer + 256, value, c.sizeof(value), None)
+        return value.value
 
     def close_library(self):
         tab = self.control(1083)
@@ -288,10 +332,13 @@ hot_key_enable=false
     k.LocalFree(encrypted.data)
     (output / "remote-library.json").write_text(json.dumps({"url": f"http://127.0.0.1:{fixture.server_port}",
         "cache_directory": str(output / "cache"), "protected_key": protected}), encoding="utf-8")
-    seed = output / "seed.wav"
-    seed.write_bytes(wav(0))
     (output / "playlist").mkdir()
-    (output / "playlist" / "default_playlist.playlist").write_text(str(seed) + "\n", encoding="utf-8-sig")
+    if args.empty_default_playlist:
+        (output / "playlist" / "default_playlist.playlist").write_text("", encoding="utf-8-sig")
+    else:
+        seed = output / "seed.wav"
+        seed.write_bytes(wav(0))
+        (output / "playlist" / "default_playlist.playlist").write_text(str(seed) + "\n", encoding="utf-8-sig")
     return output
 
 
@@ -305,6 +352,9 @@ def run(args):
     try:
         desktop = Desktop(process)
         desktop.library()
+        if args.empty_default_playlist:
+            assert desktop.send(desktop.control(1015), 4100) == 0, "empty default playlist"
+            print("PASS empty default playlist startup without debug assertion", flush=True)
         assert desktop.send(desktop.control(8107), 4100) == 3
         assert fixture.media() == [], "browsing must not download audio"
         fixture.gates["1"] = threading.Event()
@@ -312,6 +362,8 @@ def run(args):
         until(lambda: fixture.media() == ["1"], "first demand download")
         assert desktop.send(desktop.control(1015), 4100) == 3, "full playback queue"
         assert "测试" in desktop.text(1015, 0, 1), "friendly filename display"
+        if args.empty_default_playlist:
+            print("PASS empty default playlist switches to complete server queue without debug assertion", flush=True)
         desktop.command(32778)  # Pause while first download is outstanding.
         time.sleep(.3)
         fixture.gates["1"].set()
@@ -328,6 +380,8 @@ def run(args):
         desktop.command(32808)
         desktop.click(8110)
         until(lambda: "测试曲目1" in desktop.title(), "same snapshot loaded")
+        main_manifests = remote_manifests(output, "main")
+        assert len(main_manifests) == 1, "initial server playlist snapshot"
         desktop.close_library()
         desktop.command(33167)  # Remove the current song from the local queue.
         confirmation = until(lambda: next((hwnd for hwnd, _, ident in desktop.windows() if ident == 6), 0), "remove confirmation")
@@ -359,18 +413,25 @@ def run(args):
         until(lambda: "测试曲目1" in desktop.title(), "cached first track")
         time.sleep(1)
         assert len(fixture.requests) == count, "cache playback must not use HTTP"
-        manifest = next((output / "playlist").glob("server-*.remote.json"))
+        manifest = main_manifests[0]
         original = manifest.read_bytes()
-        fixture.ids = ["1", "2"]
+        fixture.ids = ["1", "2", "3", "4"]
         fixture.revision += 1
         desktop.click(8108)
-        until(lambda: desktop.send(desktop.control(8107), 4100) == 2, "updated browsing snapshot")
-        assert desktop.send(desktop.control(1015), 4100) == 3
-        assert manifest.read_bytes() == original, "refresh must not replace playing snapshot"
-        desktop.click(8110)
-        until(lambda: desktop.send(desktop.control(1015), 4100) == 2, "explicit updated playlist playback")
+        until(lambda: desktop.send(desktop.control(8107), 4100) == 4, "updated browsing snapshot")
+        until(lambda: desktop.send(desktop.control(1015), 4100) == 4, "refresh updates current playback queue")
+        assert "测试曲目4" in desktop.text(1015, 3, 1), "new server track metadata shown immediately"
+        assert "测试曲目1" in desktop.title(), "refresh retains current track"
+        assert fixture.media() == ["1", "2", "3"], "refresh must not download new audio"
+        assert remote_manifests(output, "main") == main_manifests, "refresh must reuse the linked local playlist"
+        assert manifest.read_bytes() != original, "refresh must update the materialized playlist"
+        local_songs = desktop.local_playlist_tracks("完整测试歌单")
+        assert desktop.send(local_songs, 4100) == 4, "local Playlist tab reflects refreshed track count"
+        assert "测试曲目4" in desktop.text_on(local_songs, 3, 1), "local Playlist tab resolves new track title"
+        assert "测试作者" in desktop.text_on(local_songs, 3, 2), "local Playlist tab resolves new track artist"
+        desktop.server_tab()
         desktop.command(32779)
-        print("PASS cached zero HTTP, browse selection/scroll recovery, refresh snapshot isolation", flush=True)
+        print("PASS cached zero HTTP, browse selection/scroll recovery, live linked playlist refresh", flush=True)
 
         desktop.select_playlist(2)
         desktop.command(32804)
@@ -445,11 +506,13 @@ def run(args):
     finally:
         for gate in fixture.gates.values():
             gate.set()
-        if desktop:
-            desktop.close()
-        elif process.poll() is None:
-            process.terminate()
-            process.wait(5)
+        try:
+            if desktop:
+                desktop.close()
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(5)
         fixture.shutdown()
         fixture.server_close()
 
@@ -458,4 +521,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path, help="New directory outside Windows Temp")
+    parser.add_argument("--empty-default-playlist", action="store_true", help="Regress empty startup and switching from empty to server playback")
     run(parser.parse_args())

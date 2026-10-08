@@ -1169,7 +1169,10 @@ void CPlayer::SaveRecentInfoToFiles(bool save_playlist)
         list_item.contain_sub_folder = m_contain_sub_folder;
     }
     list_item.sort_mode = m_sort_mode;
-    list_item.last_track = GetCurrentSongInfo();
+    // Empty playlists contain a placeholder, which has no valid song key.
+    const SongInfo& current_song = GetCurrentSongInfo();
+    if (!current_song.file_path.empty())
+        list_item.last_track = current_song;
     list_item.last_position = GetCurrentPosition();
     list_item.total_time = m_total_time;
     list_item.total_num = song_num;
@@ -1200,11 +1203,12 @@ bool CPlayer::BeforeIniPlayList(bool continue_play, bool force_continue_play)
 bool CPlayer::PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& error)
 {
     if (playlist.tracks.empty()) { error = L"歌单没有曲目。"; return false; }
+    const std::wstring previous_playlist_path = m_playlist_path;
     // Save the old in-memory queue before writing the server snapshot. Otherwise
     // replaying the same snapshot can overwrite it with local queue edits.
     if (!BeforeIniPlayList(false)) { error = L"播放器暂时忙，稍后可重新播放歌单。"; return false; }
     std::wstring path;
-    if (!CRemoteLibraryManager::Instance().Materialize(playlist, path, error))
+    if (!CRemoteLibraryManager::Instance().Materialize(playlist, previous_playlist_path, path, error))
     {
         GetPlayStatusMutex().unlock();
         m_loading = false;
@@ -1222,6 +1226,61 @@ bool CPlayer::PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& e
     SongKey first_song;
     first_song.path = RemoteLibraryConfig::Load().Client().CachePath(playlist.tracks.front());
     IniPlayList(true, {}, first_song);
+    return true;
+}
+
+bool CPlayer::RefreshCurrentRemotePlaylist(const RemotePlaylist& playlist, std::wstring& error)
+{
+    if (m_loading || !GetPlayStatusMutex().try_lock_for(std::chrono::milliseconds(1000)))
+    {
+        error = L"播放器正在使用播放列表，请稍后重试刷新。";
+        return false;
+    }
+    const std::wstring current_path = GetCurrentFilePath();
+    const bool was_playing = IsPlaying();
+    std::wstring path;
+    auto& library = CRemoteLibraryManager::Instance();
+    if (!library.Materialize(playlist, m_playlist_path, path, error))
+    {
+        GetPlayStatusMutex().unlock();
+        return false;
+    }
+
+    std::vector<SongInfo> songs;
+    songs.reserve(playlist.tracks.size());
+    int current_index = -1;
+    for (const auto& track : playlist.tracks)
+    {
+        SongInfo song;
+        song.file_path = RemoteLibraryConfig::Load().Client().CachePath(track);
+        library.ApplyMetadata(song);
+        if (song.file_path == current_path) current_index = static_cast<int>(songs.size());
+        songs.push_back(std::move(song));
+    }
+    if (current_index < 0) MusicControl(Command::CLOSE);
+    m_playlist_path = path;
+    m_playlist = std::move(songs);
+    if (m_playlist.empty()) m_playlist.push_back(SongInfo{});
+    m_index = current_index < 0 ? 0 : current_index;
+    m_total_time = 0;
+    for (const auto& song : m_playlist) m_total_time += song.length().toInt();
+    OnPlaylistChange();
+    m_remote_failed.clear();
+    InitShuffleList(m_index);
+    if (current_index < 0)
+    {
+        m_current_position.fromInt(0);
+        m_song_length.fromInt(0);
+        if (!IsPlaylistEmpty())
+        {
+            MusicControl(Command::OPEN);
+            if (was_playing) MusicControl(Command::PLAY);
+        }
+    }
+    else m_controls.UpdateControlsMetadata(GetCurrentSongInfo());
+    AfterSetTrack();
+    SaveRecentInfoToFiles(false);
+    GetPlayStatusMutex().unlock();
     return true;
 }
 

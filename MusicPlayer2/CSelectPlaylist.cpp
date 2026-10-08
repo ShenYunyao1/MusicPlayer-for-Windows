@@ -10,6 +10,7 @@
 #include "MusicPlayerCmdHelper.h"
 #include "PlaylistPropertiesDlg.h"
 #include "CRecentList.h"
+#include "RemoteLibraryManager.h"
 
 // CSelectPlaylist 对话框
 
@@ -85,6 +86,14 @@ void CSelectPlaylistDlg::ShowSongList()
         playlist_file.MoveToSongList(m_cur_song_list);
 
         CSongDataManager::GetInstance().LoadSongsInfo(m_cur_song_list);  // 从媒体库加载歌曲属性
+        // Server metadata also covers tracks that have not been downloaded yet.
+        auto& remote_library = CRemoteLibraryManager::Instance();
+        if (remote_library.LoadPlaylist(list_item.path))
+        {
+            for (SongInfo& song : m_cur_song_list)
+                remote_library.ApplyMetadata(song);
+        }
+
         int index{}, totla_time{};
         for (const SongInfo& song : m_cur_song_list)
         {

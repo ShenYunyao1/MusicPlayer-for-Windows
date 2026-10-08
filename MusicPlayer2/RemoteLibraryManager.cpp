@@ -2,6 +2,7 @@
 #include "RemoteLibraryManager.h"
 #include "MusicPlayer2.h"
 #include "Playlist.h"
+#include "CRecentList.h"
 #include "Common.h"
 #include "nlohmann/json.hpp"
 #include <filesystem>
@@ -175,12 +176,52 @@ void CRemoteLibraryManager::SaveOfflineStep(std::shared_ptr<RemoteLibraryTask> t
     });
 }
 
-bool CRemoteLibraryManager::Materialize(const RemotePlaylist& playlist, std::wstring& path, std::wstring& error)
+std::vector<std::wstring> CRemoteLibraryManager::MaterializedPaths(const RemotePlaylist& playlist) const
+{
+    std::vector<std::wstring> paths;
+    const auto namespace_id = Utf8(RemoteLibraryConfig::Load().Client().CacheDirectory());
+    std::error_code directory_error;
+    for (const auto& entry : std::filesystem::directory_iterator(theApp.m_playlist_dir, directory_error))
+    {
+        const auto filename = entry.path().filename().wstring();
+        if (filename.rfind(L"server-", 0) != 0 || filename.size() <= 21 ||
+            filename.compare(filename.size() - 21, 21, L".playlist.remote.json") != 0)
+            continue;
+        try
+        {
+            std::ifstream input(entry.path(), std::ios::binary);
+            const auto old_manifest = json::parse(input);
+            const int version = old_manifest.value("version", 0);
+            if ((version == 1 || version == 2) && old_manifest.value("namespace", "") == namespace_id &&
+                old_manifest.value("id", "") == playlist.id &&
+                (!playlist.id.empty() || old_manifest.value("name", "") == Utf8(playlist.name)))
+                paths.push_back(entry.path().wstring().substr(0, entry.path().wstring().size() - 12));
+        }
+        catch (const std::exception&) {}
+    }
+    return paths;
+}
+
+bool CRemoteLibraryManager::Materialize(const RemotePlaylist& playlist, const std::wstring& preferred_path,
+    std::wstring& path, std::wstring& error)
 {
     try
     {
         auto client=RemoteLibraryConfig::Load().Client();
-        json manifest={{"version",1},{"namespace",Utf8(client.CacheDirectory())},{"name",Utf8(playlist.name)},{"id",playlist.id},{"tracks",json::array()}};
+        const std::string name_or_id = playlist.id.empty() ? "name:" + Utf8(playlist.name) : "id:" + playlist.id;
+        const std::string identity = Utf8(client.CacheDirectory()) + "\n" + name_or_id;
+        const std::wstring stable_path = (std::filesystem::path(theApp.m_playlist_dir) /
+            (L"server-" + Wide(CRemoteLibraryClient::HashString(identity)) + L".playlist")).wstring();
+        const auto related_paths = MaterializedPaths(playlist);
+        if (std::find(related_paths.begin(), related_paths.end(), preferred_path) != related_paths.end())
+            path = preferred_path;
+        else if (std::find(related_paths.begin(), related_paths.end(), stable_path) != related_paths.end())
+            path = stable_path;
+        else if (!related_paths.empty())
+            path = related_paths.front();
+        else
+            path = stable_path;
+        json manifest={{"version",2},{"namespace",Utf8(client.CacheDirectory())},{"name",Utf8(playlist.name)},{"id",playlist.id},{"tracks",json::array()}};
         std::vector<SongInfo> songs;
         for (const auto& track:playlist.tracks)
         {
@@ -189,13 +230,17 @@ bool CRemoteLibraryManager::Materialize(const RemotePlaylist& playlist, std::wst
             SongInfo song; song.file_path=cache; songs.push_back(song);
             manifest["tracks"].push_back(TrackJson(track));
         }
-        // Each snapshot has its own file, so updates preserve the active queue.
-        // The player saves the old queue before materializing even the same snapshot.
-        auto name=CRemoteLibraryClient::HashString(manifest.dump());
-        path=(std::filesystem::path(theApp.m_playlist_dir)/(L"server-"+Wide(name)+L".playlist")).wstring();
         SaveJson(path+L".remote.json",manifest);
         CPlaylistFile::SavePlaylistToFile(songs,path);
         if (!CCommon::FileExist(path)) throw std::runtime_error("playlist write failed");
+        if (!LoadPlaylist(path)) throw std::runtime_error("playlist metadata load failed");
+        for (const auto& old_path : related_paths)
+        {
+            if (old_path == path) continue;
+            CRecentList::Instance().RemoveItem({ LT_PLAYLIST, old_path });
+            DeleteFileW(old_path.c_str());
+            DeleteFileW((old_path + L".remote.json").c_str());
+        }
         return true;
     }
     catch (const std::exception& e) { error=L"保存播放歌单失败："+Wide(e.what()); return false; }
@@ -209,7 +254,8 @@ bool CRemoteLibraryManager::LoadPlaylist(const std::wstring& path)
         if (!in) return false;
         auto manifest=json::parse(in);
         auto client=RemoteLibraryConfig::Load().Client();
-        if (manifest.value("version",0)!=1 || manifest.value("namespace","")!=Utf8(client.CacheDirectory())) return false;
+        const int version = manifest.value("version", 0);
+        if ((version != 1 && version != 2) || manifest.value("namespace","")!=Utf8(client.CacheDirectory())) return false;
         std::lock_guard<std::mutex> lock(m_mutex);
         m_names[path]=Wide(manifest.value("name",""));
         for (const auto& value:manifest.at("tracks"))
@@ -260,7 +306,8 @@ std::wstring CRemoteLibraryManager::PlaylistName(const std::wstring& path)
         std::ifstream in(path+L".remote.json",std::ios::binary);
         if (!in) return {};
         auto manifest=json::parse(in);
-        if (manifest.value("version",0)!=1) return {};
+        const int version = manifest.value("version",0);
+        if (version != 1 && version != 2) return {};
         auto name=Wide(manifest.value("name",""));
         std::lock_guard<std::mutex> lock(m_mutex); m_names[path]=name;
         return name;

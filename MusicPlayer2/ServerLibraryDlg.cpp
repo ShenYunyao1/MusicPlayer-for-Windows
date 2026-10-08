@@ -2,6 +2,9 @@
 #include "ServerLibraryDlg.h"
 #include "MusicPlayer2.h"
 #include "Player.h"
+#include "MusicPlayerDlg.h"
+#include "MusicPlayerCmdHelper.h"
+#include "CRecentList.h"
 #include "Common.h"
 #include "RemoteLibraryVersion.h"
 
@@ -187,8 +190,43 @@ void CServerLibraryDlg::OnTimer(UINT_PTR timer)
     if (m_library_task && m_library_task->done.load(std::memory_order_acquire))
     {
         auto task=m_library_task; m_library_task.reset();
+        std::wstring refresh_error;
+        bool updated_current = false, updated_lists = false;
+        if (task->success && !task->offline && !task->local_only)
+        {
+            auto& library = CRemoteLibraryManager::Instance();
+            auto& player = CPlayer::GetInstance();
+            for (const auto& playlist : task->playlists)
+            {
+                const auto paths = library.MaterializedPaths(playlist);
+                if (paths.empty()) continue;
+                const auto current_path = player.GetPlaylistPath();
+                if (player.IsPlaylistMode() && std::find(paths.begin(), paths.end(), current_path) != paths.end())
+                {
+                    if (!player.RefreshCurrentRemotePlaylist(playlist, refresh_error)) break;
+                    updated_current = true;
+                }
+                else
+                {
+                    std::wstring path;
+                    if (!library.Materialize(playlist, paths.front(), path, refresh_error)) break;
+                    CRecentList::Instance().AddNewItem({ LT_PLAYLIST, path });
+                    int duration = 0;
+                    for (const auto& track : playlist.tracks) duration += track.duration_ms;
+                    CRecentList::Instance().SetPlaylistTotalInfo({ LT_PLAYLIST, path },
+                        static_cast<int>(playlist.tracks.size()), duration);
+                }
+                updated_lists = true;
+            }
+            if (updated_lists)
+            {
+                CRecentList::Instance().SaveData();
+                CMusicPlayerCmdHelper::RefreshMediaTabData(CMusicPlayerCmdHelper::ML_PLAYLIST);
+                if (updated_current) CMusicPlayerDlg::GetInstance()->ShowPlayList(false);
+            }
+        }
         if (task->success) { SaveState(); m_playlists=task->playlists; RenderPlaylists(); }
-        SetDlgItemTextW(IDC_SERVER_STATUS,task->status.c_str());
+        SetDlgItemTextW(IDC_SERVER_STATUS,(refresh_error.empty() ? task->status : refresh_error).c_str());
         // First run has no offline snapshot: obtain the library from the server.
         if (!task->success && task->local_only && !*task->cancel) OnRefresh();
         UpdateButtons();

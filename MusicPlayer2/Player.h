@@ -320,6 +320,7 @@ public:
     // force为true时会强制播放参数list_item成员last_track指示曲目
     bool SetList(ListItem list_item, bool play = false, bool force = false);
     bool PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& error);
+    bool RefreshCurrentRemotePlaylist(const RemotePlaylist& playlist, std::wstring& error);
 
     // 切换到指定路径的播放列表模式/通过“打开文件夹”来设置路径的处理
     // （不进行“切换播放列表时继续播放”）（没能取得播放状态锁返回false）
