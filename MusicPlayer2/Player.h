@@ -10,6 +10,7 @@
 #include "SpectralDataHelper.h"
 #include "MediaTransControls.h"
 #include "ListItem.h"
+#include "RemoteLibraryManager.h"
 
 #define WM_PLAYLIST_INI_START (WM_USER+104)         // 播放列表开始加载时的消息
 #define WM_PLAYLIST_INI_COMPLATE (WM_USER+105)      // 播放列表加载完成消息
@@ -174,6 +175,11 @@ private:
     ABRepeatMode m_ab_repeat_mode{};
 
     bool m_file_opend{ false };             //如果打开了一个文件，则为true
+    std::shared_ptr<RemoteLibraryTask> m_remote_task;
+    bool m_remote_open_ready{}, m_remote_want_play{}, m_remote_skipping{};
+    std::set<int> m_remote_failed;
+    wstring m_remote_status;
+    void SkipRemoteFailure(const wstring& reason);
     std::atomic_bool m_player_core_inited{ false };     //播放内核是否初始化
     bool m_contain_sub_folder{ false };     //文件夹模式是否包含子文件夹
 
@@ -252,6 +258,9 @@ public:
     // 以上加锁的操作及其中调用的方法切勿重复加锁会有未定义行为，也不能换成递归锁(防止重入)
     // 判断与以上操作互斥的操作理论上也应当加锁但我没有检查会不会死锁，可以放弃的操作可以用try_lock_for进行
     std::timed_mutex& GetPlayStatusMutex() { return m_play_status_sync; }
+    // Called by the main window timer while holding the playback mutex.
+    void ProcessRemotePlayback();
+    bool IsLoading() const { return m_loading; }
 
 public:
     //获取CPlayer类的唯一的对象
@@ -310,6 +319,7 @@ public:
     // continue_when_switch_playlist条件不满足时会还原此列表上次关闭时的状态(从CRecentList加载)
     // force为true时会强制播放参数list_item成员last_track指示曲目
     bool SetList(ListItem list_item, bool play = false, bool force = false);
+    bool PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& error);
 
     // 切换到指定路径的播放列表模式/通过“打开文件夹”来设置路径的处理
     // （不进行“切换播放列表时继续播放”）（没能取得播放状态锁返回false）

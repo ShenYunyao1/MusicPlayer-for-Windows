@@ -2628,6 +2628,7 @@ void CMusicPlayerDlg::OnTimer(UINT_PTR nIDEvent)
         // 这里在更改播放状态，需要先取得锁，没有成功取得锁的话下次再试
         if (CPlayer::GetInstance().GetPlayStatusMutex().try_lock())
         {
+            CPlayer::GetInstance().ProcessRemotePlayback();
             //if (CPlayer::GetInstance().SongIsOver() && (!theApp.m_lyric_setting_data.stop_when_error || !CPlayer::GetInstance().IsError()))   //当前曲目播放完毕且没有出现错误时才播放下一曲
             if ((CPlayer::GetInstance().SongIsOver() || (!theApp.m_play_setting_data.stop_when_error && (CPlayer::GetInstance().IsError() || CPlayer::GetInstance().GetSongLength() <= 0)))
                 && m_play_error_cnt <= CPlayer::GetInstance().GetSongNum()
@@ -4403,6 +4404,9 @@ UINT CMusicPlayerDlg::DownloadLyricAndCoverThreadFunc(LPVOID lpParam)
     // 获取媒体库项目后所有操作基于song_info_ori进行
     SongInfo song_info_ori{ CSongDataManager::GetInstance().GetSongInfo3(CPlayer::GetInstance().GetCurrentSongInfo()) };
     CFilePathHelper song_info_ori_path{ song_info_ori.file_path };
+    // Server attachments belong to its playback snapshot; do not replace them
+    // with automatic third-party matches. Manual searches remain available.
+    if (CRemoteLibraryManager::Instance().IsRemote(song_info_ori.file_path)) return 0;
     if (theApp.m_general_setting_data.auto_download_only_tag_full)      //设置了“仅当歌曲信息完整进才自动下载”时，如果歌曲标题和艺术家有一个为空，则不自动下载
     {
         if (song_info_ori.IsTitleEmpty() || song_info_ori.IsArtistEmpty())

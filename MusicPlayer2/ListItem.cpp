@@ -5,6 +5,7 @@
 #include "FilePathHelper.h"
 #include "SongDataManager.h"
 #include "SongInfoHelper.h"
+#include "RemoteLibraryManager.h"
 
 
 ListItem::ListItem(ListType _type, wstring _path, ListItem::ClassificationType _medialib_type)
@@ -104,7 +105,11 @@ wstring ListItem::GetDisplayName() const
             return theApp.m_str_table.LoadText(L"TXT_PLAYLIST_NAME_FAVOURITE");
         if (CRecentList::IsSpecPlaylist(*this, CRecentList::PT_TEMP))
             return theApp.m_str_table.LoadText(L"TXT_PLAYLIST_NAME_TEMP");
-        return CFilePathHelper(path).GetFileNameWithoutExtension();
+        {
+            auto name=CRemoteLibraryManager::Instance().PlaylistName(path);
+            if (!name.empty()) return name;
+            return CFilePathHelper(path).GetFileNameWithoutExtension();
+        }
     case LT_MEDIA_LIB:
         if (medialib_type == ClassificationType::CT_NONE)   // 所有曲目
             return theApp.m_str_table.LoadText(L"TXT_ALL_TRACKS");

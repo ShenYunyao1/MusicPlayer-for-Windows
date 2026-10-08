@@ -7,6 +7,7 @@ import json
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -21,7 +22,7 @@ MODES = {
     "removed": (b"", ""),
     "corrupt": (b"expected image", "image/png"),
     "oversized": (b"a" * ((8 << 20) + 1), "image/png"),
-    "denied": (PNG2, "image/png"),
+    "denied": (PNG + b"denied artwork", "image/png"),
 }
 
 
@@ -33,6 +34,12 @@ class FixtureServer(ThreadingHTTPServer):
     mode = "png"
     revision = 1
     auth_failures = 0
+    requests = 0
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.connection_lock = threading.Lock()
+        self.connection_active = self.connection_maximum = 0
 
     def track(self):
         data, mime = MODES[self.mode]
@@ -40,6 +47,8 @@ class FixtureServer(ThreadingHTTPServer):
             "id": "fixture", "title": "fixture", "artist": "fixture artist",
             "lyrics": "[00:01.00]fixture lyrics", "size": len(AUDIO),
             "content_hash": digest(AUDIO), "format": "mp3",
+            "duration_ms": 12345, "bitrate_kbps": 320, "sample_rate": 44100,
+            "channels": 2, "bits_per_sample": 16,
             "cover_id": digest(data) if data else "", "cover_mime": mime,
             "cover_source": "external" if data else "",
         }
@@ -66,6 +75,22 @@ class Handler(BaseHTTPRequestHandler):
             self.server.auth_failures += 1
             return self.reply({}, 401)
         path = urlsplit(self.path)
+        if path.path == "/api/v1/playlists":
+            with self.server.connection_lock:
+                self.server.connection_active += 1
+                self.server.connection_maximum = max(self.server.connection_maximum, self.server.connection_active)
+            try:
+                time.sleep(.1)
+                self.reply([])
+            finally:
+                with self.server.connection_lock:
+                    self.server.connection_active -= 1
+            return
+        if path.path == "/api/v1/tracks/fixture" and parse_qs(path.query).get("mode") == ["stats"]:
+            value = self.server.track()
+            value["path"] = str(self.server.requests)
+            return self.reply(value)
+        self.server.requests += 1
         if path.path == "/api/v1/tracks/fixture":
             mode = parse_qs(path.query).get("mode", ["png"])[0]
             if mode == "stop":
@@ -113,6 +138,9 @@ def main():
                 raise SystemExit(result.returncode)
             if server.auth_failures:
                 raise SystemExit("client did not authenticate all fixture requests")
+            if server.connection_maximum != 1:
+                raise SystemExit("connection checks overlapped: " + str(server.connection_maximum))
+            print("PASS serialized connection checks across client instances", flush=True)
     finally:
         if thread.is_alive():
             server.shutdown()

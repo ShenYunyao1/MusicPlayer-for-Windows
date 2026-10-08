@@ -230,7 +230,10 @@ afx_msg LRESULT CMediaLibDlg::OnPlaySelectedBtnEnable(WPARAM wParam, LPARAM lPar
     bool enable = (wParam != 0);
     CWnd* pBtn = GetDlgItem(IDC_PLAY_SELECTED);
     if (pBtn != nullptr)
+    {
         pBtn->EnableWindow(enable);
+        pBtn->SetWindowTextW(dynamic_cast<CServerLibraryDlg*>(m_tab_ctrl.GetCurrentTab()) ? L"播放歌单" : theApp.m_str_table.LoadText(L"TXT_LIB_PLAY_SEL").c_str());
+    }
 
     return 0;
 }

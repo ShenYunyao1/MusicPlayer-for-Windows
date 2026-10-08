@@ -3,8 +3,7 @@
 #include "MusicPlayer2.h"
 #include "Player.h"
 #include "Common.h"
-
-namespace { constexpr UINT WM_SERVER_LIBRARY_DONE = WM_APP + 702; }
+#include "RemoteLibraryVersion.h"
 
 BEGIN_MESSAGE_MAP(CServerLibraryDlg, CTabDlg)
     ON_BN_CLICKED(IDC_SERVER_REFRESH, &CServerLibraryDlg::OnRefresh)
@@ -13,18 +12,12 @@ BEGIN_MESSAGE_MAP(CServerLibraryDlg, CTabDlg)
     ON_BN_CLICKED(IDC_SERVER_CONFIGURE, &CServerLibraryDlg::OnConfigure)
     ON_BN_CLICKED(IDC_SERVER_CANCEL, &CServerLibraryDlg::OnCancelTask)
     ON_LBN_SELCHANGE(IDC_SERVER_PLAYLISTS, &CServerLibraryDlg::OnPlaylist)
+    ON_LBN_DBLCLK(IDC_SERVER_PLAYLISTS, &CServerLibraryDlg::OnOK)
     ON_NOTIFY(LVN_ITEMCHANGED, IDC_SERVER_TRACKS, &CServerLibraryDlg::OnTrackChanged)
-    ON_NOTIFY(NM_DBLCLK, IDC_SERVER_TRACKS, &CServerLibraryDlg::OnDoubleClick)
-    ON_MESSAGE(WM_SERVER_LIBRARY_DONE, &CServerLibraryDlg::OnFinished)
+    ON_WM_TIMER()
     ON_WM_DESTROY()
     ON_WM_SIZE()
 END_MESSAGE_MAP()
-
-CServerLibraryDlg::~CServerLibraryDlg()
-{
-    if (m_cancel) *m_cancel = true;
-    if (m_worker.joinable()) m_worker.join();
-}
 
 BOOL CServerLibraryDlg::OnInitDialog()
 {
@@ -38,173 +31,178 @@ BOOL CServerLibraryDlg::OnInitDialog()
     m_track_list.InsertColumn(3, L"风格", LVCFMT_LEFT, theApp.DPI(80));
     SetDlgItemTextW(IDC_SERVER_REFRESH, L"刷新");
     SetDlgItemTextW(IDC_SERVER_DOWNLOAD, L"离线保存歌单");
-    SetDlgItemTextW(IDC_SERVER_PLAY, L"播放选中");
+    SetDlgItemTextW(IDC_SERVER_PLAY, L"播放歌单");
     SetDlgItemTextW(IDC_SERVER_CONFIGURE, L"服务器设置");
     SetDlgItemTextW(IDC_SERVER_CANCEL, L"取消任务");
-    SetDlgItemTextW(IDC_SERVER_STATUS, L"请先在设置中配置服务器，再刷新歌单。");
-    GetDlgItem(IDC_SERVER_CANCEL)->EnableWindow(FALSE);
+    SetDlgItemTextW(IDC_SERVER_STATUS, (L"服务器适配 "+std::wstring(RemoteLibraryVersion::Version)+L"；播放时按需缓存当前曲目。").c_str());
+    m_state=CRemoteLibraryManager::Instance().BrowseState();
+    UpdateButtons();
+    SetTimer(1,100,nullptr);
     CRect rect; GetClientRect(rect); Layout(rect.Width(), rect.Height());
     return TRUE;
 }
 
+bool CServerLibraryDlg::HasPlaylist() const
+{
+    return m_selected_playlist>=0 && m_selected_playlist<static_cast<int>(m_playlists.size()) && !m_playlists[m_selected_playlist].tracks.empty();
+}
+void CServerLibraryDlg::UpdateButtons()
+{
+    const bool busy=bool(m_library_task) || bool(m_offline_task);
+    GetDlgItem(IDC_SERVER_REFRESH)->EnableWindow(!busy);
+    GetDlgItem(IDC_SERVER_CONFIGURE)->EnableWindow(!busy);
+    GetDlgItem(IDC_SERVER_DOWNLOAD)->EnableWindow(!busy && HasPlaylist());
+    GetDlgItem(IDC_SERVER_PLAY)->EnableWindow(HasPlaylist());
+    GetDlgItem(IDC_SERVER_CANCEL)->EnableWindow(busy);
+    if (auto parent=GetParentWindow()) parent->SendMessage(WM_PLAY_SELECTED_BTN_ENABLE,HasPlaylist());
+}
 void CServerLibraryDlg::OnTabEntered()
 {
-    const auto config = RemoteLibraryConfig::Load();
-    const auto signature = CRemoteLibraryClient::HashString(CCommon::UnicodeToStr(config.url, CodeType::UTF8_NO_BOM) + "\n" + config.api_key);
-    if (!m_worker.joinable() && (m_playlists.empty() || m_loaded_signature != signature)) OnRefresh();
-    if (auto parent = GetParentWindow()) parent->SendMessage(WM_PLAY_SELECTED_BTN_ENABLE, !m_worker.joinable() && m_track_list.GetSelectedCount() != 0);
+    auto space=RemoteLibraryConfig::Load().Client().CacheDirectory();
+    if (space!=m_loaded_namespace)
+    {
+        m_loaded_namespace=space;
+        m_playlists.clear(); m_selected_playlist=-1;
+        m_state=CRemoteLibraryManager::Instance().BrowseState();
+        m_library_task=CRemoteLibraryManager::Instance().Library();
+    }
+    UpdateButtons();
 }
-
-void CServerLibraryDlg::Busy(bool value)
-{
-    for (int id : {IDC_SERVER_REFRESH, IDC_SERVER_DOWNLOAD, IDC_SERVER_PLAY, IDC_SERVER_CONFIGURE, IDC_SERVER_PLAYLISTS, IDC_SERVER_TRACKS}) GetDlgItem(id)->EnableWindow(!value);
-    GetDlgItem(IDC_SERVER_CANCEL)->EnableWindow(value);
-    if (auto parent = GetParentWindow()) parent->SendMessage(WM_PLAY_SELECTED_BTN_ENABLE, !value && m_track_list.GetSelectedCount() != 0);
-}
-
 void CServerLibraryDlg::OnRefresh()
 {
-    if (m_worker.joinable()) return;
-    const auto config = RemoteLibraryConfig::Load();
-    auto client = config.Client();
-    if (!client.IsConfigured()) { SetDlgItemTextW(IDC_SERVER_STATUS, L"请先打开服务器设置，填写地址并应用。"); return; }
-    m_cancel = std::make_shared<std::atomic<bool>>(false);
-    client.SetCancellation(m_cancel);
-    m_sync_task = true;
-    m_play_task = false;
-    const auto signature = CRemoteLibraryClient::HashString(CCommon::UnicodeToStr(config.url, CodeType::UTF8_NO_BOM) + "\n" + config.api_key);
-    if (m_loaded_signature != signature) { m_playlists.clear(); RenderPlaylists(); }
-    m_loaded_signature = signature;
-    Busy(true);
-    SetDlgItemTextW(IDC_SERVER_STATUS, L"正在检查歌单更新…");
-    const HWND window = GetSafeHwnd();
-    m_worker = std::thread([this, client, window] {
-        try
-        {
-            bool offline{};
-            std::wstring error;
-            m_success = client.SyncLibrary(m_result_playlists, offline, error);
-            m_result_status = m_success ? (offline ? L"离线模式，使用已保存的歌单。" : L"歌单已同步。") : L"同步失败。";
-            if (!error.empty()) m_result_status += L" " + error;
-        }
-        catch (const std::exception&) { m_success = false; m_result_status = L"同步发生异常"; }
-        ::PostMessageW(window, WM_SERVER_LIBRARY_DONE, 0, 0);
-    });
+    if (m_library_task) return;
+    SaveState();
+    m_library_task=CRemoteLibraryManager::Instance().Library(true);
+    SetDlgItemTextW(IDC_SERVER_STATUS,L"正在检查歌单更新…正在播放的队列保持当前快照。");
+    UpdateButtons();
 }
-
+void CServerLibraryDlg::SaveState()
+{
+    if (m_rendering || m_selected_playlist<0 || m_selected_playlist>=static_cast<int>(m_playlists.size())) return;
+    const auto& playlist=m_playlists[m_selected_playlist];
+    m_state.playlist_id=playlist.id;
+    int row=m_track_list.GetNextItem(-1,LVNI_SELECTED);
+    m_state.track_id=(row>=0 && row<static_cast<int>(playlist.tracks.size())) ? playlist.tracks[row].id : "";
+    m_state.top_row=m_track_list.GetTopIndex();
+    CRemoteLibraryManager::Instance().SaveBrowseState(m_state);
+}
 void CServerLibraryDlg::RenderPlaylists()
 {
+    m_rendering=true;
     m_playlist_list.ResetContent();
-    for (const auto& playlist : m_playlists) m_playlist_list.AddString(playlist.name.c_str());
-    if (!m_playlists.empty()) m_playlist_list.SetCurSel((std::max)(0, (std::min)(m_selected_playlist, static_cast<int>(m_playlists.size()) - 1)));
-    OnPlaylist();
+    m_selected_playlist=-1;
+    for (size_t i=0;i<m_playlists.size();++i)
+    {
+        m_playlist_list.AddString(m_playlists[i].name.c_str());
+        if (m_playlists[i].id==m_state.playlist_id) m_selected_playlist=static_cast<int>(i);
+    }
+    if (m_selected_playlist<0 && !m_playlists.empty()) m_selected_playlist=0;
+    m_playlist_list.SetCurSel(m_selected_playlist);
+    RenderTracks();
+    m_rendering=false;
+    UpdateButtons();
 }
-
-void CServerLibraryDlg::OnPlaylist()
+void CServerLibraryDlg::RenderTracks()
 {
     m_track_list.DeleteAllItems();
-    SetDlgItemTextW(IDC_SERVER_NOTES, L"");
-    m_selected_playlist = m_playlist_list.GetCurSel();
-    if (m_selected_playlist < 0 || m_selected_playlist >= static_cast<int>(m_playlists.size())) return;
-    const auto& playlist = m_playlists[m_selected_playlist];
-    SetDlgItemTextW(IDC_SERVER_NOTES, playlist.description.c_str());
-    int row = 0;
-    for (const auto& track : playlist.tracks)
+    SetDlgItemTextW(IDC_SERVER_NOTES,L"");
+    if (m_selected_playlist<0 || m_selected_playlist>=static_cast<int>(m_playlists.size())) return;
+    const auto& playlist=m_playlists[m_selected_playlist];
+    SetDlgItemTextW(IDC_SERVER_NOTES,playlist.description.c_str());
+    int row=0;
+    for (const auto& track:playlist.tracks)
     {
-        m_track_list.InsertItem(row, track.title.c_str());
-        m_track_list.SetItemText(row, 1, track.artist.c_str());
-        m_track_list.SetItemText(row, 2, track.album.c_str());
-        m_track_list.SetItemText(row, 3, track.genre.c_str());
+        m_track_list.InsertItem(row,track.title.c_str());
+        m_track_list.SetItemText(row,1,track.artist.c_str());
+        m_track_list.SetItemText(row,2,track.album.c_str());
+        m_track_list.SetItemText(row,3,track.genre.c_str());
+        if (track.id==m_state.track_id) m_track_list.SetItemState(row,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
         ++row;
     }
+    if (row>0 && m_state.top_row>0)
+    {
+        int top=(std::min)(row-1,m_state.top_row);
+        m_track_list.EnsureVisible(top,FALSE);
+        CRect item; m_track_list.GetItemRect(0,item,LVIR_BOUNDS);
+        m_track_list.Scroll(CSize(0,(top-m_track_list.GetTopIndex())*item.Height()));
+    }
 }
-
+void CServerLibraryDlg::OnPlaylist()
+{
+    if (m_rendering) return;
+    SaveState();
+    m_selected_playlist=m_playlist_list.GetCurSel();
+    m_state.track_id.clear(); m_state.top_row=0;
+    m_rendering=true; RenderTracks(); m_rendering=false;
+    SaveState(); UpdateButtons();
+}
 void CServerLibraryDlg::OnTrackChanged(NMHDR*, LRESULT* result)
 {
-    *result = 0;
-    if (auto parent = GetParentWindow()) parent->SendMessage(WM_PLAY_SELECTED_BTN_ENABLE, !m_worker.joinable() && m_track_list.GetSelectedCount() != 0);
-    if (m_selected_playlist < 0 || m_selected_playlist >= static_cast<int>(m_playlists.size())) return;
-    const auto& playlist = m_playlists[m_selected_playlist];
-    int row = m_track_list.GetNextItem(-1, LVNI_SELECTED);
-    std::wstring note = playlist.description;
-    if (row >= 0 && row < static_cast<int>(playlist.tracks.size()))
+    *result=0;
+    if (m_rendering || m_selected_playlist<0 || m_selected_playlist>=static_cast<int>(m_playlists.size())) return;
+    const auto& playlist=m_playlists[m_selected_playlist];
+    int row=m_track_list.GetNextItem(-1,LVNI_SELECTED);
+    auto note=playlist.description;
+    if (row>=0 && row<static_cast<int>(playlist.tracks.size()))
     {
-        const auto& track = playlist.tracks[row];
-        note += L"  " + track.comment;
-        auto found = playlist.track_notes.find(track.id);
-        if (found != playlist.track_notes.end()) note += L"  " + found->second;
+        const auto& track=playlist.tracks[row]; note+=L"  "+track.comment;
+        auto found=playlist.track_notes.find(track.id);
+        if (found!=playlist.track_notes.end()) note+=L"  "+found->second;
     }
-    SetDlgItemTextW(IDC_SERVER_NOTES, note.c_str());
+    SetDlgItemTextW(IDC_SERVER_NOTES,note.c_str());
+    SaveState(); UpdateButtons();
 }
-
-void CServerLibraryDlg::Download(bool play)
+void CServerLibraryDlg::OnOK()
 {
-    if (m_worker.joinable() || m_selected_playlist < 0 || m_selected_playlist >= static_cast<int>(m_playlists.size())) return;
-    std::vector<RemoteTrack> tracks;
-    const auto& playlist = m_playlists[m_selected_playlist];
-    if (play)
-    {
-        for (int row = m_track_list.GetNextItem(-1, LVNI_SELECTED); row >= 0; row = m_track_list.GetNextItem(row, LVNI_SELECTED))
-            if (row < static_cast<int>(playlist.tracks.size())) tracks.push_back(playlist.tracks[row]);
-    }
-    else tracks = playlist.tracks;
-    if (tracks.empty()) { SetDlgItemTextW(IDC_SERVER_STATUS, L"请先选择曲目，或选择包含曲目的歌单。"); return; }
-    auto client = RemoteLibraryConfig::Load().Client();
-    m_cancel = std::make_shared<std::atomic<bool>>(false);
-    client.SetCancellation(m_cancel);
-    m_sync_task = false;
-    m_play_task = play;
-    Busy(true);
-    SetDlgItemTextW(IDC_SERVER_STATUS, L"正在下载并校验缓存，完成后即可播放…");
-    const HWND window = GetSafeHwnd();
-    m_worker = std::thread([this, client, tracks, window] {
-        m_result_files.clear();
-        m_success = true;
-        try
-        {
-            for (const auto& track : tracks)
-            {
-                std::wstring path, error;
-                if (*m_cancel || !client.EnsureCached(track, path, error))
-                {
-                    m_success = false;
-                    m_result_status = *m_cancel ? L"任务已取消，已完成的缓存保留。" : L"下载失败：" + error;
-                    break;
-                }
-                m_result_files.push_back(path);
-            }
-            if (m_success) m_result_status = L"缓存完成，共 " + std::to_wstring(m_result_files.size()) + L" 首曲目。";
-        }
-        catch (const std::exception&) { m_success = false; m_result_status = L"缓存任务发生异常"; }
-        ::PostMessageW(window, WM_SERVER_LIBRARY_DONE, 0, 0);
-    });
+    if (!HasPlaylist()) return;
+    if (CPlayer::GetInstance().IsLoading()) { SetDlgItemTextW(IDC_SERVER_STATUS,L"播放器正在加载列表，请稍后再试。"); return; }
+    SaveState();
+    std::wstring error;
+    if (!CPlayer::GetInstance().PlayRemotePlaylist(m_playlists[m_selected_playlist],error))
+        SetDlgItemTextW(IDC_SERVER_STATUS,error.c_str());
+    else SetDlgItemTextW(IDC_SERVER_STATUS,L"已载入完整歌单；播放到未缓存曲目时才下载，离线时跳过。");
 }
-
-void CServerLibraryDlg::OnDownload() { Download(false); }
-void CServerLibraryDlg::OnOK() { Download(true); }
-void CServerLibraryDlg::OnDoubleClick(NMHDR*, LRESULT* result) { *result = 0; OnOK(); }
-void CServerLibraryDlg::OnCancelTask() { if (m_cancel) *m_cancel = true; }
+void CServerLibraryDlg::OnDownload()
+{
+    if (!HasPlaylist() || m_offline_task) return;
+    CRemoteLibraryManager::Instance().RetryConnection();
+    m_offline_task=CRemoteLibraryManager::Instance().SaveOffline(m_playlists[m_selected_playlist]);
+    SetDlgItemTextW(IDC_SERVER_STATUS,L"正在离线保存整个歌单；关闭媒体库后任务仍继续。");
+    UpdateButtons();
+}
+void CServerLibraryDlg::OnCancelTask()
+{
+    if (m_library_task) *m_library_task->cancel=true;
+    if (m_offline_task) *m_offline_task->cancel=true;
+    SetDlgItemTextW(IDC_SERVER_STATUS,L"正在取消页面任务，播放任务继续运行。");
+}
 void CServerLibraryDlg::OnConfigure()
 {
-    theApp.m_pMainWnd->SendMessage(WM_OPTION_SETTINGS, 6, LPARAM(GetParentWindow()));
-    if (IsWindow(GetSafeHwnd())) OnRefresh();
+    SaveState();
+    theApp.m_pMainWnd->SendMessage(WM_OPTION_SETTINGS,6,LPARAM(GetParentWindow()));
+    if (IsWindow(GetSafeHwnd())) { OnTabEntered(); if (!m_library_task) OnRefresh(); }
 }
-
-LRESULT CServerLibraryDlg::OnFinished(WPARAM, LPARAM)
+void CServerLibraryDlg::OnTimer(UINT_PTR timer)
 {
-    if (m_worker.joinable()) m_worker.join();
-    if (m_success && m_sync_task) { m_playlists = std::move(m_result_playlists); RenderPlaylists(); }
-    SetDlgItemTextW(IDC_SERVER_STATUS, m_result_status.c_str());
-    Busy(false);
-    if (m_success && m_play_task && !m_result_files.empty())
-        if (!CPlayer::GetInstance().OpenFilesInDefaultPlaylist(m_result_files, true)) SetDlgItemTextW(IDC_SERVER_STATUS, L"缓存成功，但播放列表打开失败。");
-    return 0;
+    if (m_library_task && m_library_task->done.load(std::memory_order_acquire))
+    {
+        auto task=m_library_task; m_library_task.reset();
+        if (task->success) { SaveState(); m_playlists=task->playlists; RenderPlaylists(); }
+        SetDlgItemTextW(IDC_SERVER_STATUS,task->status.c_str());
+        // First run has no offline snapshot: obtain the library from the server.
+        if (!task->success && task->local_only && !*task->cancel) OnRefresh();
+        UpdateButtons();
+    }
+    if (m_offline_task && m_offline_task->done.load(std::memory_order_acquire))
+    {
+        SetDlgItemTextW(IDC_SERVER_STATUS,m_offline_task->status.c_str());
+        m_offline_task.reset(); UpdateButtons();
+    }
+    CTabDlg::OnTimer(timer);
 }
-
 void CServerLibraryDlg::OnDestroy()
 {
-    if (m_cancel) *m_cancel = true;
-    if (m_worker.joinable()) m_worker.join();
+    SaveState(); KillTimer(1);
     CTabDlg::OnDestroy();
 }
 

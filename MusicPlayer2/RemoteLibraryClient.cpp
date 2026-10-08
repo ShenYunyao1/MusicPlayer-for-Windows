@@ -8,6 +8,7 @@
 #include <array>
 #include <algorithm>
 #include <sstream>
+#include <mutex>
 
 #include "nlohmann/json.hpp"
 
@@ -130,6 +131,11 @@ namespace
         track.format = value.value("format", "mp3");
         track.path = value.value("path", "");
         track.size = value.value("size", static_cast<unsigned __int64>(0));
+        track.duration_ms = value.value("duration_ms", 0);
+        track.bitrate_kbps = value.value("bitrate_kbps", 0);
+        track.sample_rate = value.value("sample_rate", 0);
+        track.channels = value.value("channels", 0);
+        track.bits_per_sample = value.value("bits_per_sample", 0);
         return track;
     }
 
@@ -251,7 +257,7 @@ bool CRemoteLibraryClient::GetTrack(const std::string& track_id, RemoteTrack& tr
     }
 }
 
-bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, bool& offline, std::wstring& error_message) const
+bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, bool& offline, std::wstring& error_message, bool local_only, bool refresh_artwork) const
 {
     playlists.clear();
     offline = false;
@@ -269,7 +275,7 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
         std::string response;
         const auto revision = saved.is_object() ? saved.value("revision", -1LL) : -1LL;
         const std::wstring endpoint = revision >= 0 ? L"/api/v1/sync?since=" + std::to_wstring(revision) : L"/api/v1/sync";
-        bool received = Request(endpoint, response, error_message);
+        bool received = !local_only && Request(endpoint, response, error_message);
         json snapshot;
         if (received)
         {
@@ -293,26 +299,17 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
             RemoteTrack track = ParseTrack(value);
             tracks.emplace(track.id, std::move(track));
         }
-        if (received)
+        if (received && refresh_artwork)
         {
-            // Refresh artwork for audio already cached, including removal in
-            // a new snapshot. Offline snapshots retain their verified artwork.
+            // Store refreshed artwork by ID. The playing snapshot keeps its
+            // own sidecars until the track is prepared from a new snapshot.
             std::error_code file_error;
             for (const auto& entry : tracks)
             {
                 const std::wstring cached_path = CachePath(entry.second);
                 if (!cached_path.empty() && std::filesystem::is_regular_file(cached_path, file_error))
-                    EnsureCoverCached(entry.second, cached_path);
+                    RefreshArtwork(entry.second);
             }
-            if (saved.is_object() && saved.contains("changed_tracks") && saved["changed_tracks"].is_array())
-                for (const auto& value : saved["changed_tracks"])
-                {
-                    RemoteTrack previous = ParseTrack(value);
-                    if (tracks.find(previous.id) != tracks.end()) continue;
-                    const std::wstring cached_path = CachePath(previous);
-                    previous.cover_id.clear();
-                    if (!cached_path.empty()) EnsureCoverCached(previous, cached_path);
-                }
         }
         for (const auto& value : snapshot["playlists"])
         {
@@ -354,7 +351,7 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
     }
 }
 
-bool CRemoteLibraryClient::EnsureCached(const RemoteTrack& track, std::wstring& cached_path, std::wstring& error_message) const
+bool CRemoteLibraryClient::EnsureCached(const RemoteTrack& track, std::wstring& cached_path, std::wstring& error_message, bool allow_network) const
 {
     cached_path = CachePath(track);
     if (cached_path.empty())
@@ -370,6 +367,11 @@ bool CRemoteLibraryClient::EnsureCached(const RemoteTrack& track, std::wstring& 
         verified = HashStream(input) == track.content_hash;
     }
     const std::filesystem::path destination(cached_path);
+    if (!verified && !allow_network)
+    {
+        error_message = L"曲目尚未缓存或缓存校验失败";
+        return false;
+    }
     std::filesystem::create_directories(destination.parent_path(), file_error);
     if (file_error)
     {
@@ -408,35 +410,54 @@ bool CRemoteLibraryClient::EnsureCached(const RemoteTrack& track, std::wstring& 
         if (!lyrics) { error_message = L"保存歌词失败"; return false; }
     }
     else std::filesystem::remove(lyrics_path, file_error);
-    EnsureCoverCached(track, cached_path);
+    // A verified audio cache never requires a server request for playback.
+    EnsureCoverCached(track, cached_path, !verified && allow_network, true);
     return true;
 }
 
-void CRemoteLibraryClient::EnsureCoverCached(const RemoteTrack& track, const std::wstring& cached_path) const
+void CRemoteLibraryClient::RefreshArtwork(const RemoteTrack& track) const
+{
+    const auto path = CachePath(track);
+    if (!path.empty()) EnsureCoverCached(track, path, true, false);
+}
+
+void CRemoteLibraryClient::EnsureCoverCached(const RemoteTrack& track, const std::wstring& cached_path, bool allow_network, bool apply_to_audio) const
 {
     const std::wstring extension = CoverExtension(track.cover_mime);
-    std::filesystem::path target(cached_path);
-    if (!extension.empty()) target.replace_extension(extension);
     const bool wanted = ValidHash(track.cover_id) && !extension.empty();
+    std::filesystem::path sidecar(cached_path);
+    if (!extension.empty()) sidecar.replace_extension(extension);
+    std::filesystem::path asset = std::filesystem::path(m_cache_directory) / L"covers" / (Utf8ToWide(track.cover_id) + extension);
     std::error_code file_error;
-    bool verified = wanted && FileHasHash(target, track.cover_id);
-    // Never leave stale art selected after a server-side change or removal.
+    bool verified = wanted && FileHasHash(asset, track.cover_id);
+    if (wanted && !verified && FileHasHash(sidecar, track.cover_id))
+    {
+        // Retain artwork downloaded by earlier client versions, without HTTP.
+        std::filesystem::create_directories(asset.parent_path(), file_error);
+        std::filesystem::copy_file(sidecar, asset, std::filesystem::copy_options::overwrite_existing, file_error);
+        verified = !file_error;
+    }
+    if (wanted && !verified && allow_network && !(m_cancel && *m_cancel))
+    {
+        std::filesystem::create_directories(asset.parent_path(), file_error);
+        const std::wstring temporary = asset.wstring() + L".download";
+        std::string ignored;
+        std::wstring error;
+        // Artwork is optional: permission/network errors do not block audio.
+        if (Download(L"/api/v1/covers/" + Utf8ToWide(track.cover_id), ignored, error, temporary, 8 * 1024 * 1024)
+            && FileHasHash(temporary, track.cover_id))
+            verified = !!MoveFileExW(temporary.c_str(), asset.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        std::filesystem::remove(temporary, file_error);
+    }
+    if (!apply_to_audio || (m_cancel && *m_cancel)) return;
     for (const wchar_t* candidate : {L".jpg", L".jpeg", L".png", L".gif", L".bmp", L".webp"})
     {
         std::filesystem::path previous(cached_path);
         previous.replace_extension(candidate);
-        if (!verified || previous != target)
-            std::filesystem::remove(previous, file_error);
+        if (!verified || previous != sidecar) std::filesystem::remove(previous, file_error);
     }
-    if (!wanted || verified || (m_cancel && *m_cancel)) return;
-    const std::wstring temporary = target.wstring() + L".download";
-    std::string ignored;
-    std::wstring error;
-    // Artwork is optional: a network/permission failure never blocks playback.
-    bool downloaded = Download(L"/api/v1/covers/" + Utf8ToWide(track.cover_id), ignored, error, temporary, 8 * 1024 * 1024);
-    if (downloaded && FileHasHash(temporary, track.cover_id))
-        MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-    std::filesystem::remove(temporary, file_error);
+    if (verified && !FileHasHash(sidecar, track.cover_id))
+        std::filesystem::copy_file(asset, sidecar, std::filesystem::copy_options::overwrite_existing, file_error);
 }
 
 bool CRemoteLibraryClient::Request(const std::wstring& path, std::string& response, std::wstring& error_message) const
@@ -446,6 +467,13 @@ bool CRemoteLibraryClient::Request(const std::wstring& path, std::string& respon
 
 bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& response, std::wstring& error_message, const std::wstring& destination, unsigned __int64 maximum) const
 {
+    m_transport_failed = false;
+    if (m_cancel && *m_cancel) { error_message = L"任务已取消"; return false; }
+    // Settings connection checks use a separate client from the library worker.
+    // Serialize every HTTP request to respect keys with a concurrency limit of 1.
+    static std::mutex request_mutex;
+    std::lock_guard<std::mutex> request_lock(request_mutex);
+    if (m_cancel && *m_cancel) { error_message = L"任务已取消"; return false; }
     response.clear();
     if (!IsConfigured())
     {
@@ -477,6 +505,7 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
     HINTERNET connection = WinHttpConnect(session, host, components.nPort, 0);
     if (connection == nullptr)
     {
+        m_transport_failed=true;
         error_message = WinHttpError(L"连接服务器", GetLastError());
         WinHttpCloseHandle(session);
         return false;
@@ -505,6 +534,7 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
         WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
     if (!success)
     {
+        m_transport_failed = true;
         error_message = WinHttpError(L"HTTP 请求", GetLastError());
     }
     else if (status < 200 || status >= 300)
@@ -526,6 +556,7 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(request, &available))
         {
+            m_transport_failed = true;
             error_message = WinHttpError(L"读取 HTTP 响应", GetLastError());
             success = false;
             break;
@@ -535,6 +566,7 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
         DWORD read = 0;
         if (!WinHttpReadData(request, buffer.data(), (std::min)(available, static_cast<DWORD>(buffer.size())), &read))
         {
+            m_transport_failed = true;
             error_message = WinHttpError(L"读取 HTTP 数据", GetLastError());
             success = false;
             break;

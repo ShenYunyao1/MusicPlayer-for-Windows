@@ -146,6 +146,7 @@ void CPlayer::CreateWithPlaylist(const wstring& playlist_path)
 
 void CPlayer::IniPlayList(bool play, MediaLibRefreshMode refresh_mode, SongKey song_key)
 {
+    m_remote_failed.clear();
     m_no_use = SongInfo{};  // 安全起见，防止意外写入被应用
     m_playlist.clear();
     //播放列表模式下
@@ -154,6 +155,7 @@ void CPlayer::IniPlayList(bool play, MediaLibRefreshMode refresh_mode, SongKey s
         CPlaylistFile playlist;
         playlist.LoadFromFile(m_playlist_path);
         playlist.MoveToSongList(m_playlist);
+        CRemoteLibraryManager::Instance().LoadPlaylist(m_playlist_path);
     }
     //媒体库播放列表模式下
     else if (m_playlist_mode == PM_MEDIA_LIB)
@@ -227,9 +229,26 @@ UINT CPlayer::IniPlaylistThreadFunc(LPVOID lpParam)
     {
         // 解析cue并更新所有曲目到媒体库，执行后仅file_path、track、is_cue可用
         // 此处不应设置ignore_short为true，因为现在正在初始化播放列表，如果读取到短文件却不保存有可能导致列表每次打开耗时都很长
-        CAudioCommon::GetAudioInfo(play_list, update_cnt, exit_flag, pInfo->process_percent, pInfo->refresh_mode);
-        // 将媒体库内信息更新到播放列表
-        CSongDataManager::GetInstance().LoadSongsInfo(play_list);
+        // Remote entries must remain in the queue even before their audio is cached.
+        vector<SongInfo> merged, local_songs;
+        auto flush_local = [&] {
+            if (local_songs.empty()) return;
+            CAudioCommon::GetAudioInfo(local_songs, update_cnt, exit_flag, pInfo->process_percent, pInfo->refresh_mode);
+            CSongDataManager::GetInstance().LoadSongsInfo(local_songs);
+            merged.insert(merged.end(), local_songs.begin(), local_songs.end());
+            local_songs.clear();
+        };
+        for (auto song : play_list)
+        {
+            if (CRemoteLibraryManager::Instance().ApplyMetadata(song))
+            {
+                flush_local();
+                merged.push_back(std::move(song));
+            }
+            else local_songs.push_back(std::move(song));
+        }
+        flush_local();
+        play_list=std::move(merged);
     }
 
     bool find_succeed{ cur_song.file_path.empty() };    // 为true说明不必继续查找cur_song
@@ -407,6 +426,7 @@ void CPlayer::IniPlaylistComplate()
 
 void CPlayer::SearchLyrics(bool refresh)
 {
+    if (CRemoteLibraryManager::Instance().ApplyMetadata(GetCurrentSongInfo2())) return;
     //检索正在播放的音频文件的歌词
     const SongInfo& cur_song = GetCurrentSongInfo();
     SongInfo cur_song_info{ CSongDataManager::GetInstance().GetSongInfo3(cur_song) };
@@ -430,6 +450,13 @@ void CPlayer::SearchLyrics(bool refresh)
 
 void CPlayer::IniLyrics()
 {
+    // Explicit server lyrics take precedence over the original embedded tags.
+    if (CRemoteLibraryManager::Instance().IsRemote(GetCurrentFilePath()) && !GetCurrentSongInfo().lyric_file.empty())
+    {
+        m_Lyrics=CLyrics{GetCurrentSongInfo().lyric_file};
+        m_inner_lyric=false;
+        return;
+    }
     //尝试获取内嵌歌词
     CLyrics inner_lyrics;       //音频文件内嵌歌词
     wstring lyric_str;          //内嵌歌词的原始文本
@@ -481,6 +508,58 @@ void CPlayer::MusicControl(Command command, int volume_step)
 {
     if (m_pCore == nullptr)
         return;
+
+    if (command==Command::STOP || command==Command::CLOSE)
+    {
+        if (m_remote_task) *m_remote_task->cancel=true;
+        m_remote_task.reset();
+        m_remote_want_play=false;
+    }
+    const bool remote=CRemoteLibraryManager::Instance().IsRemote(GetCurrentFilePath());
+    if (remote && !m_remote_open_ready)
+    {
+        if (command==Command::OPEN)
+        {
+            if (m_remote_task) *m_remote_task->cancel=true;
+            m_remote_task=CRemoteLibraryManager::Instance().Prepare(GetCurrentFilePath(),false);
+            m_remote_want_play=false;
+            m_file_opend=false;
+            m_playing=PS_STOPED;
+            m_error_state=ES_NO_ERROR; m_error_code=0;
+            m_remote_status=L"正在校验曲目缓存…";
+            CRemoteLibraryManager::Instance().ApplyMetadata(GetCurrentSongInfo2());
+            m_song_length=GetCurrentSongInfo().length();
+            m_album_cover.Destroy(); m_album_cover_blur.Destroy(); m_Lyrics=CLyrics();
+            m_controls.UpdateControlsMetadata(GetCurrentSongInfo());
+            SendMessage(theApp.m_pMainWnd->GetSafeHwnd(),WM_POST_MUSIC_STREAM_OPENED,0,0);
+            return;
+        }
+        if (!m_file_opend && command!=Command::STOP && command!=Command::CLOSE && command!=Command::VOLUME_ADJ)
+        {
+            if (command==Command::PLAY_PAUSE) command=m_remote_want_play ? Command::PAUSE : Command::PLAY;
+            if (command==Command::PLAY)
+            {
+                if (!m_remote_task)
+                {
+                    if (!m_remote_status.empty()) CRemoteLibraryManager::Instance().RetryConnection();
+                    m_remote_failed.clear();
+                    m_remote_task=CRemoteLibraryManager::Instance().Prepare(GetCurrentFilePath(),true);
+                }
+                m_remote_want_play=true; m_playing=PS_PLAYING;
+                m_error_state=ES_NO_ERROR; m_error_code=0;
+                m_remote_status=L"正在准备当前曲目（缓存缺失时下载）…";
+                m_controls.UpdateControls(PlaybackStatus::Playing);
+            }
+            else if (command==Command::PAUSE)
+            {
+                m_remote_want_play=false; m_playing=PS_PAUSED;
+                m_controls.UpdateControls(PlaybackStatus::Paused);
+            }
+            else if (command==Command::FF) SeekTo(m_current_position.toInt()+5000);
+            else if (command==Command::REW) SeekTo((std::max)(0,m_current_position.toInt()-5000));
+            return;
+        }
+    }
 
     // VOLUME_UP和VOLUME_DOWN可在无法播放时使用
     // stop和close也可以在m_index失效无法播放时使用（RemoveSong(s)）
@@ -640,6 +719,91 @@ void CPlayer::MusicControl(Command command, int volume_step)
     }
 }
 
+void CPlayer::ProcessRemotePlayback()
+{
+    if (!m_remote_task || !m_remote_task->done.load(std::memory_order_acquire)) return;
+    auto task=m_remote_task;
+    m_remote_task.reset();
+    if (*task->cancel || task->path!=GetCurrentFilePath()) return;
+    if (!task->success)
+    {
+        if (task->local_only)
+        {
+            if (m_remote_want_play)
+                m_remote_task=CRemoteLibraryManager::Instance().Prepare(GetCurrentFilePath(),true);
+            else m_remote_status=L"曲目未缓存，点击播放时下载。";
+        }
+        else if (m_remote_want_play) SkipRemoteFailure(task->status);
+        else m_remote_status=task->status;
+        return;
+    }
+    const int position=m_current_position.toInt();
+    const bool play=m_remote_want_play;
+    const bool paused=m_playing==PS_PAUSED;
+    m_remote_open_ready=true;
+    MusicControl(Command::OPEN);
+    m_remote_open_ready=false;
+    if (IsError() || m_song_length.toInt()<=0)
+    {
+        if (play) SkipRemoteFailure(L"曲目缓存无法解码");
+        else { MusicControl(Command::CLOSE); m_remote_status=L"曲目缓存无法解码"; }
+        return;
+    }
+    m_remote_failed.clear();
+    m_remote_status.clear();
+    SeekTo(position);
+    if (play) MusicControl(Command::PLAY);
+    else if (paused) MusicControl(Command::PAUSE);
+    AfterSetTrack();
+}
+
+void CPlayer::SkipRemoteFailure(const wstring& reason)
+{
+    m_remote_failed.insert(m_index);
+    int next=-1;
+    if (m_repeat_mode==RM_PLAY_RANDOM)
+    {
+        vector<int> candidates;
+        for (int i=0;i<GetSongNum();++i) if (!m_remote_failed.count(i)) candidates.push_back(i);
+        if (!candidates.empty()) next=candidates[CCommon::Random(0,static_cast<int>(candidates.size()))];
+    }
+    else
+    {
+        for (int offset=1;offset<=GetSongNum();++offset)
+        {
+            // Sequential playback ends at the tail instead of revisiting cached tracks.
+            if (m_repeat_mode==RM_PLAY_ORDER && m_index+offset>=GetSongNum()) break;
+            int candidate=(m_index+offset)%GetSongNum();
+            int shuffle_index=-1;
+            if (m_repeat_mode==RM_PLAY_SHUFFLE && m_shuffle_list.size()==m_playlist.size())
+            {
+                shuffle_index=(m_shuffle_index+offset)%static_cast<int>(m_shuffle_list.size());
+                candidate=m_shuffle_list[shuffle_index];
+            }
+            if (!m_remote_failed.count(candidate))
+            {
+                next=candidate;
+                if (shuffle_index>=0) m_shuffle_index=shuffle_index;
+                break;
+            }
+        }
+    }
+    theApp.WriteLog(L"服务器曲目跳过："+GetDisplayName()+L"；"+reason);
+    if (next<0)
+    {
+        MusicControl(Command::STOP);
+        m_file_opend=false;
+        m_remote_status=L"后续没有可播放曲目，已停止。 "+reason;
+        m_error_state=ES_FILE_NOT_EXIST;
+        AfterSetTrack();
+        return;
+    }
+    m_remote_skipping=true;
+    m_next_tracks.clear();
+    PlayTrack(next,true);
+    m_remote_skipping=false;
+}
+
 bool CPlayer::SongIsOver() const
 {
     if (m_player_core_inited && m_pCore != nullptr)
@@ -654,6 +818,7 @@ bool CPlayer::SongIsOver() const
 
 void CPlayer::GetPlayerCoreCurrentPosition()
 {
+    if (!m_file_opend && CRemoteLibraryManager::Instance().IsRemote(GetCurrentFilePath())) return;
     if (m_player_core_inited && m_pCore != nullptr)
     {
         int current_position_int = m_pCore->GetCurPosition();
@@ -751,6 +916,7 @@ bool CPlayer::PlayTrack(int song_track, bool auto_next)
     if (song_track >= 0) {
         m_next_tracks.clear();     //手动播放时复位下一首列表
     }
+    if (!m_remote_skipping) m_remote_failed.clear();
     bool stop{};    // 根据循环模式和参数song_track判断应当停止时设置为true
     switch (m_repeat_mode)
     {
@@ -804,7 +970,7 @@ bool CPlayer::PlayTrack(int song_track, bool auto_next)
                 m_shuffle_index = GetPrevShuffleIdx();
                 song_track = m_shuffle_list[m_shuffle_index];
             }
-            else if (m_is_shuffle_list_played)
+            else if (m_is_shuffle_list_played && !m_remote_skipping)
             {
                 //防止指定播放歌曲时，生成的列表第一个仍是该歌曲导致连续播放两遍
                 InitShuffleList(song_track);      //手动指定播放曲目时重新生成无序列表
@@ -1030,6 +1196,34 @@ bool CPlayer::BeforeIniPlayList(bool continue_play, bool force_continue_play)
 }
 
 #pragma region 列表初始化方法
+
+bool CPlayer::PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& error)
+{
+    if (playlist.tracks.empty()) { error = L"歌单没有曲目。"; return false; }
+    // Save the old in-memory queue before writing the server snapshot. Otherwise
+    // replaying the same snapshot can overwrite it with local queue edits.
+    if (!BeforeIniPlayList(false)) { error = L"播放器暂时忙，稍后可重新播放歌单。"; return false; }
+    std::wstring path;
+    if (!CRemoteLibraryManager::Instance().Materialize(playlist, path, error))
+    {
+        GetPlayStatusMutex().unlock();
+        m_loading = false;
+        return false;
+    }
+    m_path.clear();
+    m_playlist_path = path;
+    m_playlist_mode = PM_PLAYLIST;
+    m_sort_mode = SM_UNSORT;
+    m_contain_sub_folder = false;
+    m_index = 0;
+    m_media_lib_playlist_type = {};
+    m_media_lib_playlist_name.clear();
+    m_current_position.fromInt(0);
+    SongKey first_song;
+    first_song.path = RemoteLibraryConfig::Load().Client().CachePath(playlist.tracks.front());
+    IniPlayList(true, {}, first_song);
+    return true;
+}
 
 bool CPlayer::SetList(ListItem list_item, bool play, bool force)
 {
@@ -1461,6 +1655,7 @@ bool CPlayer::IsError() const
 
 std::wstring CPlayer::GetErrorInfo()
 {
+    if (!m_remote_status.empty() && CRemoteLibraryManager::Instance().IsRemote(GetCurrentFilePath())) return m_remote_status;
     wstring error_info;
     if (m_error_state == ES_FILE_NOT_EXIST)
         error_info = theApp.m_str_table.LoadText(L"UI_TXT_PLAYSTATUS_ERROR_FILE_NOT_EXIST");
@@ -1680,6 +1875,8 @@ wstring CPlayer::GetCurrentFilePath() const
 wstring CPlayer::GetDisplayName() const
 {
     const SongInfo& song = GetSafeCurrentSongInfo();
+    auto remote_name=CRemoteLibraryManager::Instance().TrackName(song.file_path);
+    if (!remote_name.empty()) return remote_name;
     if (song.is_cue && !song.IsArtistEmpty() && !song.IsTitleEmpty())
         return song.artist + L" - " + song.title;
     if (IsOsuFile() && !song.comment.empty())
@@ -2024,6 +2221,12 @@ int CPlayer::MoveItems(std::vector<int> indexes, int dest)
 
 void CPlayer::SeekTo(int position)
 {
+    if (!m_file_opend && CRemoteLibraryManager::Instance().IsRemote(GetCurrentFilePath()))
+    {
+        if (m_song_length.toInt()>0) position=(std::min)(position,m_song_length.toInt());
+        m_current_position.fromInt((std::max)(0,position));
+        return;
+    }
     if (position > m_song_length.toInt())
         position = m_song_length.toInt();
     m_current_position.fromInt(position);
@@ -2281,6 +2484,9 @@ void CPlayer::OnExit()
     SaveConfig();
     //退出时保存最后播放的曲目和位置
     SaveRecentInfoToFiles();
+    if (m_remote_task) *m_remote_task->cancel=true;
+    m_remote_task.reset();
+    CRemoteLibraryManager::Instance().Shutdown();
 }
 
 void CPlayer::SaveCurrentPlaylist()
@@ -2444,6 +2650,17 @@ void CPlayer::SearchAlbumCover()
     m_album_cover.Destroy();
     SongInfo song_info{ CSongDataManager::GetInstance().GetSongInfo3(GetCurrentSongInfo()) };
     bool always_use_external_album_cover{ song_info.AlwaysUseExternalAlbumCover() };
+    if (CRemoteLibraryManager::Instance().IsRemote(GetCurrentFilePath()))
+    {
+        // Respect the server artwork override, with embedded artwork as fallback.
+        SearchOutAlbumCover();
+        if (!m_album_cover.IsNull())
+        {
+            m_inner_cover=false;
+            SendMessage(theApp.m_pMainWnd->GetSafeHwnd(), WM_CURRENT_FILE_ALBUM_COVER_CHANGED, 0, 0);
+            return;
+        }
+    }
     if ((!theApp.m_app_setting_data.use_out_image || theApp.m_app_setting_data.use_inner_image_first) && !IsOsuFile() && !always_use_external_album_cover)
     {
         //从文件获取专辑封面

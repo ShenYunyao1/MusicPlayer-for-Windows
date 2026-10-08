@@ -553,6 +553,8 @@
     <ClInclude Include="RemoteLibraryResource.h"><Filter>资源文件</Filter></ClInclude>
     <ClInclude Include="ServerSettingsDlg.h"><Filter>头文件</Filter></ClInclude>
     <ClInclude Include="ServerLibraryDlg.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="RemoteLibraryManager.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="RemoteLibraryVersion.h"><Filter>头文件</Filter></ClInclude>
     <ClInclude Include="MusicPlayerDlg.h">
       <Filter>MusicPlayerDlg</Filter>
     </ClInclude>
@@ -1293,6 +1295,7 @@
     <ClCompile Include="RemoteLibraryConfig.cpp"><Filter>公共的类</Filter></ClCompile>
     <ClCompile Include="ServerSettingsDlg.cpp"><Filter>源文件</Filter></ClCompile>
     <ClCompile Include="ServerLibraryDlg.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="RemoteLibraryManager.cpp"><Filter>源文件</Filter></ClCompile>
     <ClCompile Include="MusicPlayerDlg.cpp">
       <Filter>MusicPlayerDlg</Filter>
     </ClCompile>

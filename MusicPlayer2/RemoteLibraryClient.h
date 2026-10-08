@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <string>
 #include <vector>
@@ -22,6 +22,7 @@ struct RemoteTrack
     std::string format;
     std::string path;
     unsigned __int64 size{};
+    int duration_ms{}, bitrate_kbps{}, sample_rate{}, channels{}, bits_per_sample{};
 };
 
 struct RemotePlaylist
@@ -43,19 +44,24 @@ public:
     bool GetPlaylists(std::vector<RemotePlaylist>& playlists, std::wstring& error_message) const;
     bool GetPlaylist(const std::string& playlist_id, RemotePlaylist& playlist, std::wstring& error_message) const;
     bool GetTrack(const std::string& track_id, RemoteTrack& track, std::wstring& error_message) const;
-    bool EnsureCached(const RemoteTrack& track, std::wstring& cached_path, std::wstring& error_message) const;
-    bool SyncLibrary(std::vector<RemotePlaylist>& playlists, bool& offline, std::wstring& error_message) const;
+    bool EnsureCached(const RemoteTrack& track, std::wstring& cached_path, std::wstring& error_message, bool allow_network = true) const;
+    bool SyncLibrary(std::vector<RemotePlaylist>& playlists, bool& offline, std::wstring& error_message, bool local_only = false, bool refresh_artwork = true) const;
+    // Explicit refresh stages artwork by content ID without changing active playback files.
+    void RefreshArtwork(const RemoteTrack& track) const;
+    std::wstring CachePath(const RemoteTrack& track) const;
+    const std::wstring& CacheDirectory() const { return m_cache_directory; }
+    bool TransportFailed() const { return m_transport_failed; }
     static std::string HashString(const std::string& value);
     void SetCancellation(std::shared_ptr<std::atomic<bool>> cancel) { m_cancel = std::move(cancel); }
 
 private:
     bool Request(const std::wstring& path, std::string& response, std::wstring& error_message) const;
     bool Download(const std::wstring& path, std::string& response, std::wstring& error_message, const std::wstring& destination = L"", unsigned __int64 maximum = 16 * 1024 * 1024) const;
-    std::wstring CachePath(const RemoteTrack& track) const;
-    void EnsureCoverCached(const RemoteTrack& track, const std::wstring& cached_path) const;
+    void EnsureCoverCached(const RemoteTrack& track, const std::wstring& cached_path, bool allow_network, bool apply_to_audio) const;
 
     std::wstring m_base_url;
     std::string m_api_key;
     std::wstring m_cache_directory;
     std::shared_ptr<std::atomic<bool>> m_cancel;
+    mutable bool m_transport_failed{};
 };
