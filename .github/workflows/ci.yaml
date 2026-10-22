@@ -32,25 +32,15 @@ jobs:
         uses: microsoft/setup-msbuild@v2
       - name: 编译
         run: msbuild -t:Build '-p:Configuration=Release;platform=x64' -m:4
-      - name: 上传文件
+      - name: 打包 x64 分发包
+        run: .\package.ps1
+      - name: 上传分发包
         uses: actions/upload-artifact@v4
         with:
           name: MusicPlayer2.x64
           path: |
-            ./build/*.exe
-            ./build/*.dll
-            ./build/language/
-      - name: 打包其他文件
-        run: |
-          New-Item -ItemType Directory -Path build/packages -Force | Out-Null
-          cd build
-          $resources = @('language', 'skins', 'Encoder', 'Plugins') | Where-Object { Test-Path $_ }
-          7z a -mx9 'packages/MusicPlayer2.x64.other.7z' @resources
-      - name: 上传其他文件
-        uses: actions/upload-artifact@v4
-        with:
-          name: MusicPlayer2.x64.other
-          path: ./build/packages/MusicPlayer2.x64.other.7z
+            ./dist/MusicPlayer2.zip
+            ./dist/MusicPlayer2.zip.sha256
   build-x86:
     runs-on: windows-latest
     steps:

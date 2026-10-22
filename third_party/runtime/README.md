@@ -11,4 +11,4 @@
 
 原 x64 Release 目录中的 Plugins 和 Encoder DLL 实际均为 Win32，与源码内的 32 位依赖相同。这些 DLL 仅复制到 Win32 输出，不放进 x64 输出冒充 64 位插件。本次不升级或下载第三方库；x64 的可选解码/编码 DLL 需要另行补齐，BASS 主内核、BASS FX 和 tag.dll 已按架构保留。
 
-SciLexer.dll 由仓库内 Scintilla 源码构建，不在这里保存旧编译副本。播放器程序、中间文件、个人配置及媒体均位于 Git 忽略的 `build/`，不放入本目录。
+SciLexer.dll 由仓库内 Scintilla 源码构建，不在这里保存旧编译副本。播放器程序、中间文件、个人配置及媒体位于 Git 忽略的 `build/`；测试输出位于 `test-results/`，白名单分发包位于 `dist/`，均不放入本目录。

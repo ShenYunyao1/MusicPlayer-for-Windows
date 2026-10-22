@@ -14,6 +14,8 @@
 
 # Build results
 /build/
+/test-results/
+/dist/
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/

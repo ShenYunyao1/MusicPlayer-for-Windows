@@ -61,9 +61,10 @@ def main():
                 properties = json.loads(output)['Properties']
                 expected = build if (platform, configuration) == ('x64', 'Release') else build / 'variants' / platform / configuration
                 if project.stem == 'UnitTest':
-                    expected = build / 'tests/native' / platform / configuration
+                    expected = root / 'test-results/native' / platform / configuration
                 assert Path(properties['OutDir']) == expected, properties
-                assert Path(properties['IntDir']) == build / 'obj' / project.stem / platform / configuration, properties
+                intermediate_root = root / 'test-results' if project.stem == 'UnitTest' else build
+                assert Path(properties['IntDir']) == intermediate_root / 'obj' / project.stem / platform / configuration, properties
                 cases += 1
     for name in ('MusicPlayer2.exe', 'bass.dll', 'bass_fx.dll', 'tag.dll', 'SciLexer.dll'):
         assert machine(build / name) == 0x8664, name
@@ -86,6 +87,8 @@ def main():
         for path in folder.rglob('*'):
             assert path.suffix.lower() not in extensions, path
     assert not subprocess.check_output(['git', '-C', str(root), 'ls-files', 'build'])
+    assert not (build / 'tests').exists(), 'test output belongs in test-results/'
+    assert not (build / 'obj/UnitTest').exists(), 'test intermediate files belong in test-results/'
     print(f'Build layout passed: {cases} project configurations, x64 executable/DLLs, embedded Git commit, resources, no generated source files.')
 
 

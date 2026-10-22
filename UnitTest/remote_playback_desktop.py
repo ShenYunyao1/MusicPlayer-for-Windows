@@ -324,6 +324,9 @@ class Desktop:
 
 def prepare(args, fixture):
     output = args.output.resolve()
+    build = Path(__file__).resolve().parents[1] / "build"
+    if output == build or build in output.parents:
+        raise ValueError("Desktop test output must be outside build/; use test-results/desktop-<name>.")
     output.mkdir(parents=True, exist_ok=False)
     for name in ("MusicPlayer2.exe", "bass.dll", "bass_fx.dll", "tag.dll", "SciLexer.dll"):
         shutil.copy2(args.exe.parent / name, output / name)

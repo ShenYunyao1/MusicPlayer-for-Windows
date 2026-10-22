@@ -3,10 +3,12 @@
   <PropertyGroup>
     <ClientRepositoryRoot>$(MSBuildThisFileDirectory)</ClientRepositoryRoot>
     <ClientBuildRoot>$(ClientRepositoryRoot)build\</ClientBuildRoot>
+    <ClientTestRoot>$(ClientRepositoryRoot)test-results\</ClientTestRoot>
     <OutDir Condition="'$(Platform)|$(Configuration)'=='x64|Release'">$(ClientBuildRoot)</OutDir>
     <OutDir Condition="'$(Platform)|$(Configuration)'!='x64|Release'">$(ClientBuildRoot)variants\$(Platform)\$(Configuration)\</OutDir>
-    <OutDir Condition="'$(MSBuildProjectName)'=='UnitTest'">$(ClientBuildRoot)tests\native\$(Platform)\$(Configuration)\</OutDir>
+    <OutDir Condition="'$(MSBuildProjectName)'=='UnitTest'">$(ClientTestRoot)native\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ClientBuildRoot)obj\$(MSBuildProjectName)\$(Platform)\$(Configuration)\</IntDir>
+    <IntDir Condition="'$(MSBuildProjectName)'=='UnitTest'">$(ClientTestRoot)obj\$(MSBuildProjectName)\$(Platform)\$(Configuration)\</IntDir>
     <ClientRuntimeInputs>$(ClientRepositoryRoot)third_party\runtime\</ClientRuntimeInputs>
   </PropertyGroup>
 </Project>

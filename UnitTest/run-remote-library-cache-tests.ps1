@@ -21,7 +21,12 @@ if (-not $MfcRoot) {
     }
 }
 if (-not $MfcRoot) { throw 'Visual Studio MFC x64 components are required.' }
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path ([IO.Path]::GetTempPath()) ('mp2-cache-tests-' + [guid]::NewGuid()) }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $PSScriptRoot '..\test-results\cache' }
+$buildRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\build')).TrimEnd('\')
+$testOutput = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')
+if ($testOutput -eq $buildRoot -or $testOutput.StartsWith($buildRoot+'\',[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Test output must be outside build/. Use test-results/cache.'
+}
 $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $vcvars = Join-Path $build.installationPath 'VC\Auxiliary\Build\vcvars64.bat'
