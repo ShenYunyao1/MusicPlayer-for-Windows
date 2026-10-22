@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="CopyClientRuntimeInputs" AfterTargets="Build">
+    <ItemGroup>
+      <ClientRuntimeFile Include="$(ClientRuntimeInputs)common\**\*" />
+      <ClientPlatformFile Include="$(ClientRuntimeInputs)$(Platform)\common\**\*" />
+      <ClientConfigurationFile Include="$(ClientRuntimeInputs)$(Platform)\$(Configuration)\**\*" />
+      <ClientLanguage Include="$(ProjectDir)language\**\*" />
+      <ClientSkin Include="$(ProjectDir)skins\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ClientRuntimeFile)" DestinationFiles="@(ClientRuntimeFile->'$(OutDir)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(ClientPlatformFile)" DestinationFiles="@(ClientPlatformFile->'$(OutDir)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(ClientConfigurationFile)" DestinationFiles="@(ClientConfigurationFile->'$(OutDir)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(ClientLanguage)" DestinationFiles="@(ClientLanguage->'$(OutDir)language\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(ClientSkin)" DestinationFiles="@(ClientSkin->'$(OutDir)skins\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ClientRuntimeInputs)defaults\global_cfg.ini" DestinationFolder="$(OutDir)" Condition="!Exists('$(OutDir)global_cfg.ini')" />
+  </Target>
+</Project>

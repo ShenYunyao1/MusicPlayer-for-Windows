@@ -13,6 +13,7 @@
 *.userprefs
 
 # Build results
+/build/
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/
@@ -293,3 +294,9 @@ __pycache__/
 !/MusicPlayer2/language/*.ini
 /enc_temp_folder
 test-*.xml
+
+# Versioned third-party inputs, not generated client build output.
+!/third_party/runtime/x64/
+!/third_party/runtime/**/Debug/
+!/third_party/runtime/**/Release/
+!/third_party/runtime/defaults/global_cfg.ini

@@ -126,3 +126,5 @@ MusicPlayer2仅支持Windows系统下开发和运行。要编译MusicPlayer2的�
 
 安装好Visual Studio 2022之后打开解决方案文件`MusicPlayer2.sln`编译运行即可。
 
+本地文件及输出目录约定见 [客户端文件与构建目录规范](Documents/客户端文件与构建目录规范.md)。默认 x64 Release 程序固定生成在 `build/MusicPlayer2.exe`；其他配置、中间文件和运行数据也集中于 Git 忽略的 `build/`。构建会自动复制对应架构的运行库、语言和皮肤，第三方依赖输入集中于 `third_party/runtime/`。
+

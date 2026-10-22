@@ -471,7 +471,7 @@
   </ItemGroup>
   <ItemGroup>
     <Text Include="ReadMe.txt" />
-    <Text Include="compile_time.txt" />
+    <Text Include="$(IntDir)compile_time.txt" />
     <Text Include="res\hzpy-utf8.txt">
       <Filter>资源文件</Filter>
     </Text>

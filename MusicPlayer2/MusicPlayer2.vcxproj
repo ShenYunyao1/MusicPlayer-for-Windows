@@ -73,6 +73,7 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <Import Project="..\build-layout.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
     <LibraryPath>$(OutDir);$(LibraryPath)</LibraryPath>
@@ -121,7 +122,7 @@
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <PreBuildEvent>
-      <Command>print_compile_time.bat</Command>
+      <Command>call &quot;$(ProjectDir)print_compile_time.bat&quot; &quot;$(IntDir)compile_time.txt&quot;</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -152,7 +153,7 @@
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <PreBuildEvent>
-      <Command>print_compile_time.bat</Command>
+      <Command>call &quot;$(ProjectDir)print_compile_time.bat&quot; &quot;$(IntDir)compile_time.txt&quot;</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -188,7 +189,7 @@
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <PreBuildEvent>
-      <Command>print_compile_time.bat</Command>
+      <Command>call &quot;$(ProjectDir)print_compile_time.bat&quot; &quot;$(IntDir)compile_time.txt&quot;</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -223,11 +224,11 @@
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <PreBuildEvent>
-      <Command>print_compile_time.bat</Command>
+      <Command>call &quot;$(ProjectDir)print_compile_time.bat&quot; &quot;$(IntDir)compile_time.txt&quot;</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <Text Include="compile_time.txt" />
+    <Text Include="$(IntDir)compile_time.txt" />
     <Text Include="ReadMe.txt" />
     <Text Include="res\Acknowledgement.txt" />
     <Text Include="res\hzpy-utf8.txt" />
@@ -1014,6 +1015,7 @@
     <Xml Include="res\ui\toggle_setting_group.xml" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="..\build-layout.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
   <ProjectExtensions>

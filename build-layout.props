@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ClientRepositoryRoot>$(MSBuildThisFileDirectory)</ClientRepositoryRoot>
+    <ClientBuildRoot>$(ClientRepositoryRoot)build\</ClientBuildRoot>
+    <OutDir Condition="'$(Platform)|$(Configuration)'=='x64|Release'">$(ClientBuildRoot)</OutDir>
+    <OutDir Condition="'$(Platform)|$(Configuration)'!='x64|Release'">$(ClientBuildRoot)variants\$(Platform)\$(Configuration)\</OutDir>
+    <OutDir Condition="'$(MSBuildProjectName)'=='UnitTest'">$(ClientBuildRoot)tests\native\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ClientBuildRoot)obj\$(MSBuildProjectName)\$(Platform)\$(Configuration)\</IntDir>
+    <ClientRuntimeInputs>$(ClientRepositoryRoot)third_party\runtime\</ClientRuntimeInputs>
+  </PropertyGroup>
+</Project>

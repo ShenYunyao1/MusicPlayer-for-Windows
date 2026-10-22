@@ -32,25 +32,25 @@ jobs:
         uses: microsoft/setup-msbuild@v2
       - name: 编译
         run: msbuild -t:Build '-p:Configuration=Release;platform=x64' -m:4
-      - name: 复制文件到 Release 文件夹
-        run: cp -R ./MusicPlayer2/language/ ./x64/Release/
       - name: 上传文件
         uses: actions/upload-artifact@v4
         with:
           name: MusicPlayer2.x64
           path: |
-            ./x64/Release/*.exe
-            ./x64/Release/*.dll
-            ./x64/Release/language/
+            ./build/*.exe
+            ./build/*.dll
+            ./build/language/
       - name: 打包其他文件
         run: |
-          cd x64/Release
-          7z a -mx9 '../../MusicPlayer2.x64.other.7z' '-x!*.exe' '-x!*.dll' './*'
+          New-Item -ItemType Directory -Path build/packages -Force | Out-Null
+          cd build
+          $resources = @('language', 'skins', 'Encoder', 'Plugins') | Where-Object { Test-Path $_ }
+          7z a -mx9 'packages/MusicPlayer2.x64.other.7z' @resources
       - name: 上传其他文件
         uses: actions/upload-artifact@v4
         with:
           name: MusicPlayer2.x64.other
-          path: ./MusicPlayer2.x64.other.7z
+          path: ./build/packages/MusicPlayer2.x64.other.7z
   build-x86:
     runs-on: windows-latest
     steps:
@@ -75,22 +75,23 @@ jobs:
         uses: microsoft/setup-msbuild@v2
       - name: 编译
         run: msbuild -t:Build '-p:Configuration=Release;platform=x86' -m:4
-      - name: 复制文件到 Release 文件夹
-        run: cp -R ./MusicPlayer2/language/ ./Release/
       - name: 上传文件
         uses: actions/upload-artifact@v4
         with:
           name: MusicPlayer2.x86
           path: |
-            ./Release/*.exe
-            ./Release/*.dll
-            ./Release/language/
+            ./build/variants/Win32/Release/*.exe
+            ./build/variants/Win32/Release/*.dll
+            ./build/variants/Win32/Release/language/
       - name: 打包其他文件
         run: |
-          cd Release
-          7z a -mx9 './../MusicPlayer2.x86.other.7z' '-x!*.exe' '-x!*.dll' './*'
+          New-Item -ItemType Directory -Path build/packages -Force | Out-Null
+          $package = Join-Path (Get-Location) 'build/packages/MusicPlayer2.x86.other.7z'
+          cd build/variants/Win32/Release
+          $resources = @('language', 'skins', 'Encoder', 'Plugins') | Where-Object { Test-Path $_ }
+          7z a -mx9 $package @resources
       - name: 上传其他文件
         uses: actions/upload-artifact@v4
         with:
           name: MusicPlayer2.x86.other
-          path: ./MusicPlayer2.x86.other.7z
+          path: ./build/packages/MusicPlayer2.x86.other.7z
