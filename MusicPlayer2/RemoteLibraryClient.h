@@ -22,6 +22,8 @@ struct RemoteTrack
     std::string format;
     std::string path;
     unsigned __int64 size{};
+    bool unavailable{};
+    unsigned __int64 version{};
     int duration_ms{}, bitrate_kbps{}, sample_rate{}, channels{}, bits_per_sample{};
 };
 
@@ -51,6 +53,9 @@ public:
     std::wstring CachePath(const RemoteTrack& track) const;
     const std::wstring& CacheDirectory() const { return m_cache_directory; }
     bool TransportFailed() const { return m_transport_failed; }
+    bool AccessBlocked() const;
+    bool PlaylistAllowed(const std::string& id) const;
+    bool TrackAllowed(const RemoteTrack& track) const;
     static std::string HashString(const std::string& value);
     void SetCancellation(std::shared_ptr<std::atomic<bool>> cancel) { m_cancel = std::move(cancel); }
 
@@ -58,10 +63,13 @@ private:
     bool Request(const std::wstring& path, std::string& response, std::wstring& error_message) const;
     bool Download(const std::wstring& path, std::string& response, std::wstring& error_message, const std::wstring& destination = L"", unsigned __int64 maximum = 16 * 1024 * 1024) const;
     void EnsureCoverCached(const RemoteTrack& track, const std::wstring& cached_path, bool allow_network, bool apply_to_audio) const;
+    void BlockAccess() const;
 
     std::wstring m_base_url;
     std::string m_api_key;
     std::wstring m_cache_directory;
     std::shared_ptr<std::atomic<bool>> m_cancel;
     mutable bool m_transport_failed{};
+    mutable unsigned long m_http_status{};
+    mutable std::string m_error_code;
 };

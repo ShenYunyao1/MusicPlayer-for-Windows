@@ -35,6 +35,8 @@ class FixtureServer(ThreadingHTTPServer):
     revision = 1
     auth_failures = 0
     requests = 0
+    scenario = ""
+    sync_calls = 0
 
     def __init__(self, *args):
         super().__init__(*args)
@@ -75,7 +77,9 @@ class Handler(BaseHTTPRequestHandler):
             self.server.auth_failures += 1
             return self.reply({}, 401)
         path = urlsplit(self.path)
-        if path.path == "/api/v1/playlists":
+        if path.path.startswith("/api/v1/"):
+            return self.reply({"code": "LEGACY_REMOVED"}, 410)
+        if path.path == "/api/v2/playlists":
             with self.server.connection_lock:
                 self.server.connection_active += 1
                 self.server.connection_maximum = max(self.server.connection_maximum, self.server.connection_active)
@@ -86,13 +90,18 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.connection_lock:
                     self.server.connection_active -= 1
             return
-        if path.path == "/api/v1/tracks/fixture" and parse_qs(path.query).get("mode") == ["stats"]:
+        if path.path == "/api/v2/tracks/fixture" and parse_qs(path.query).get("mode") == ["stats"]:
             value = self.server.track()
             value["path"] = str(self.server.requests)
             return self.reply(value)
         self.server.requests += 1
-        if path.path == "/api/v1/tracks/fixture":
+        if path.path == "/api/v2/tracks/fixture":
             mode = parse_qs(path.query).get("mode", ["png"])[0]
+            if mode.startswith("case-"):
+                self.server.scenario = mode[5:]
+                self.server.sync_calls = 0
+                return self.reply(self.server.track())
+            self.server.scenario = ""
             if mode == "stop":
                 self.reply(self.server.track())
                 threading.Thread(target=self.stop_server, daemon=True).start()
@@ -100,9 +109,9 @@ class Handler(BaseHTTPRequestHandler):
             self.server.mode = mode
             self.server.revision += 1
             return self.reply(self.server.track())
-        if path.path == "/api/v1/media/fixture":
+        if path.path == "/api/v2/media/fixture":
             return self.reply(AUDIO, mime="audio/mpeg")
-        if path.path.startswith("/api/v1/covers/"):
+        if path.path.startswith("/api/v2/covers/"):
             expected = self.server.track()["cover_id"]
             if path.path.rsplit("/", 1)[1] != expected or self.server.mode == "denied":
                 return self.reply({}, 403)
@@ -110,14 +119,61 @@ class Handler(BaseHTTPRequestHandler):
             if self.server.mode == "corrupt":
                 data = PNG
             return self.reply(data, mime=mime)
-        if path.path == "/api/v1/sync":
+        if path.path == "/api/v2/sync":
+            if self.server.scenario:
+                return self.protocol_page(parse_qs(path.query).get("cursor", [""])[0])
             removed = self.server.mode == "removed"
             return self.reply({
-                "revision": self.server.revision, "full_snapshot": True,
+                "revision": self.server.revision, "full_snapshot": True, "reset": True,
+                "cursor": "fixture-" + str(self.server.revision), "has_more": False,
                 "changed_tracks": [] if removed else [self.server.track()],
                 "playlists": [{"id": "fixture-playlist", "name": "fixture", "track_ids": [] if removed else ["fixture"]}],
             })
         self.reply({}, 404)
+
+    def protocol_page(self, cursor):
+        scenario = self.server.scenario
+        self.server.sync_calls += 1
+        calls = self.server.sync_calls
+        page = {"revision": 100, "full_snapshot": False, "reset": False,
+                "cursor": "done-" + scenario, "has_more": False,
+                "changed_tracks": [], "playlists": []}
+        if scenario in ("unauthorized", "forbidden", "limited"):
+            return self.reply({"error": {"code": "DENIED"}},
+                              {"unauthorized": 401, "forbidden": 403, "limited": 429}[scenario])
+        if scenario == "restart-always" or scenario == "restart" and calls == 1:
+            return self.reply({"error": {"code": "SYNC_RESTART"}}, 409)
+        if scenario == "bad-json":
+            return self.reply(b"not json")
+        if scenario in ("paged", "bad-last", "restart", "network-last", "cycle"):
+            if calls == 1 or scenario == "restart" and calls == 2:
+                page.update(full_snapshot=True, reset=True, has_more=True, cursor="page+2/=?",
+                            changed_tracks=[dict(self.server.track(), id="a")])
+            else:
+                assert cursor == "page+2/=?", "cursor was not URL encoded or not followed"
+                if scenario == "bad-last":
+                    return self.reply({"error": {"code": "FAIL"}}, 500)
+                if scenario == "network-last":
+                    self.connection.close()
+                    return
+                if scenario == "cycle":
+                    page.update(has_more=True, cursor="page+2/=?")
+                else:
+                    page.update(full_snapshot=True, changed_tracks=[dict(self.server.track(), id="b")],
+                                playlists=[{"id": "p", "name": "Paged", "sort_order": 1,
+                                            "track_ids": ["b", "a"], "track_notes": {"a": "keep note"}},
+                                           {"id": "q", "name": "First", "sort_order": 0, "track_ids": []}])
+        elif scenario == "delta":
+            assert cursor == "done-paged", "delta did not use committed cursor"
+            page.update(changed_tracks=[dict(self.server.track(), id="a", title="Updated")],
+                        playlists=[{"id": "p", "name": "Renamed", "sort_order": 1,
+                                    "track_ids": ["a", "b"], "track_notes": {"b": "retained"}}],
+                        deleted_tracks=["b"], deleted_playlists=["q"])
+        elif scenario == "restore":
+            page.update(changed_tracks=[dict(self.server.track(), id="b")])
+        elif scenario == "empty":
+            page.update(full_snapshot=True, reset=True)
+        return self.reply(page)
 
     def stop_server(self):
         self.server.shutdown()

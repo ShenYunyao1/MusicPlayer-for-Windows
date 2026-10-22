@@ -1,7 +1,8 @@
 param(
     [string]$Python = 'python',
     [string]$MfcRoot = '',
-    [string]$OutputDirectory = ''
+    [string]$OutputDirectory = '',
+    [string]$ServerBinary = ''
 )
 $ErrorActionPreference = 'Stop'
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -38,4 +39,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Remote cache test build failed.' }
     & $Python (Join-Path $PSScriptRoot 'remote_library_fixture.py') --exe $exe
     if ($LASTEXITCODE -ne 0) { throw 'Remote cache regression failed.' }
+    if ($ServerBinary) {
+        & $Python (Join-Path $PSScriptRoot 'remote_server_integration.py') --exe $exe --server $ServerBinary
+        if ($LASTEXITCODE -ne 0) { throw 'Real server integration failed.' }
+    }
 } finally { Pop-Location }

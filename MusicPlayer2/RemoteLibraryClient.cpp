@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <sstream>
 #include <mutex>
+#include <set>
 
 #include "nlohmann/json.hpp"
 
@@ -118,6 +119,8 @@ namespace
     {
         RemoteTrack track;
         track.id = value.value("id", "");
+        track.unavailable = value.value("removed", false) || value.value("missing", false);
+        track.version = value.value("version", 0ULL);
         track.title = JsonString(value, "title");
         track.artist = JsonString(value, "artist");
         track.album = JsonString(value, "album");
@@ -157,7 +160,7 @@ void CRemoteLibraryClient::Configure(const std::wstring& base_url, const std::st
     while (!m_base_url.empty() && m_base_url.back() == L'/')
         m_base_url.pop_back();
     m_api_key = api_key;
-    m_cache_directory = (std::filesystem::path(cache_directory) / Utf8ToWide(HashString(WideToUtf8(m_base_url) + "\n" + api_key))).wstring();
+    m_cache_directory = (std::filesystem::path(cache_directory) / Utf8ToWide(HashString("api/v2\n" + WideToUtf8(m_base_url) + "\n" + api_key))).wstring();
 }
 
 bool CRemoteLibraryClient::IsConfigured() const
@@ -167,15 +170,15 @@ bool CRemoteLibraryClient::IsConfigured() const
 
 bool CRemoteLibraryClient::CheckConnection(std::wstring& error_message) const
 {
-    std::string response;
-    return Request(L"/api/v1/playlists", response, error_message);
+    std::vector<RemotePlaylist> playlists;
+    return GetPlaylists(playlists, error_message);
 }
 
 bool CRemoteLibraryClient::GetPlaylists(std::vector<RemotePlaylist>& playlists, std::wstring& error_message) const
 {
     playlists.clear();
     std::string response;
-    if (!Request(L"/api/v1/playlists", response, error_message))
+    if (!Request(L"/api/v2/playlists", response, error_message))
         return false;
     try
     {
@@ -209,7 +212,7 @@ bool CRemoteLibraryClient::GetPlaylists(std::vector<RemotePlaylist>& playlists, 
 bool CRemoteLibraryClient::GetPlaylist(const std::string& playlist_id, RemotePlaylist& playlist, std::wstring& error_message) const
 {
     std::string response;
-    if (!Request(L"/api/v1/playlists/" + Utf8ToWide(playlist_id), response, error_message))
+    if (!Request(L"/api/v2/playlists/" + Utf8ToWide(playlist_id), response, error_message))
         return false;
     try
     {
@@ -222,6 +225,10 @@ bool CRemoteLibraryClient::GetPlaylist(const std::string& playlist_id, RemotePla
         playlist.id = value["playlist"].value("id", playlist_id);
         playlist.name = JsonString(value["playlist"], "name");
         playlist.description = JsonString(value["playlist"], "description");
+        playlist.track_notes.clear();
+        if (value["playlist"].contains("track_notes") && value["playlist"]["track_notes"].is_object())
+            for (auto note = value["playlist"]["track_notes"].begin(); note != value["playlist"]["track_notes"].end(); ++note)
+                if (note.value().is_string()) playlist.track_notes[note.key()] = Utf8ToWide(note.value().get<std::string>());
         playlist.track_ids.clear();
         playlist.tracks.clear();
         if (value["playlist"].contains("track_ids") && value["playlist"]["track_ids"].is_array())
@@ -243,7 +250,7 @@ bool CRemoteLibraryClient::GetPlaylist(const std::string& playlist_id, RemotePla
 bool CRemoteLibraryClient::GetTrack(const std::string& track_id, RemoteTrack& track, std::wstring& error_message) const
 {
     std::string response;
-    if (!Request(L"/api/v1/tracks/" + Utf8ToWide(track_id), response, error_message))
+    if (!Request(L"/api/v2/tracks/" + Utf8ToWide(track_id), response, error_message))
         return false;
     try
     {
@@ -261,7 +268,9 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
 {
     playlists.clear();
     offline = false;
-    const std::filesystem::path snapshot_path = std::filesystem::path(m_cache_directory) / L"library.json";
+    m_transport_failed = false;
+    error_message.clear();
+    const auto snapshot_path = std::filesystem::path(m_cache_directory) / L"library.json";
     try
     {
         json saved;
@@ -272,76 +281,148 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
             catch (const json::exception&) { saved = nullptr; }
         }
         input.close();
-        std::string response;
-        const auto revision = saved.is_object() ? saved.value("revision", -1LL) : -1LL;
-        const std::wstring endpoint = revision >= 0 ? L"/api/v1/sync?since=" + std::to_wstring(revision) : L"/api/v1/sync";
-        bool received = !local_only && Request(endpoint, response, error_message);
-        json snapshot;
-        if (received)
+        auto valid = [](const json& j) {
+            return j.is_object() && j.value("cache_schema", 0) == 3 && j.contains("changed_tracks") &&
+                j["changed_tracks"].is_array() && j.contains("playlists") && j["playlists"].is_array();
+        };
+        if (!valid(saved)) saved = nullptr;
+        json snapshot = saved;
+        bool received = false;
+        if (local_only)
         {
-            snapshot = json::parse(response);
-            if (!snapshot.value("full_snapshot", false)) snapshot = saved;
+            offline = true;
+            if (AccessBlocked()) { error_message = L"授权已失效，请在线刷新验证当前 API Key。"; return false; }
         }
         else
         {
-            offline = true;
-            snapshot = saved;
+            // Candidate maps are private to this sync. Neither a failed page nor a
+            // restarted snapshot can publish partial data or advance the saved cursor.
+            bool completed = false;
+            for (int attempt = 0; attempt < 3 && !completed; ++attempt)
+            {
+                std::map<std::string, json> tracks, lists;
+                if (saved.is_object() && attempt == 0)
+                {
+                    for (const auto& t : saved["changed_tracks"]) tracks[t.at("id").get<std::string>()] = t;
+                    for (const auto& p : saved["playlists"]) lists[p.at("id").get<std::string>()] = p;
+                }
+                std::string cursor = saved.is_object() && attempt == 0 ? saved.value("cursor", "") : "";
+                std::set<std::string> seen;
+                bool restart = false;
+                for (int page = 0; page < 10000; ++page)
+                {
+                    if (m_cancel && *m_cancel) { error_message = L"任务已取消"; return false; }
+                    // Signed server cursors use URL-safe base64; encode any other bytes.
+                    std::wstring encoded;
+                    for (unsigned char c : cursor)
+                    {
+                        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') encoded += wchar_t(c);
+                        else { encoded += L'%'; encoded += L"0123456789ABCDEF"[c >> 4]; encoded += L"0123456789ABCDEF"[c & 15]; }
+                    }
+                    std::string response;
+                    if (!Request(L"/api/v2/sync?limit=100" + (cursor.empty() ? L"" : L"&cursor=" + encoded), response, error_message))
+                    {
+                        if (m_http_status == 409 && m_error_code == "SYNC_RESTART") { restart = true; break; }
+                        if (m_http_status == 401 || m_http_status == 403) BlockAccess();
+                        if (m_transport_failed && valid(saved) && !AccessBlocked() && !(m_cancel && *m_cancel))
+                        { offline = true; snapshot = saved; completed = true; break; }
+                        return false;
+                    }
+                    const auto data = json::parse(response);
+                    if (!data.is_object() || !data.contains("changed_tracks") || !data["changed_tracks"].is_array() ||
+                        !data.contains("playlists") || !data["playlists"].is_array() ||
+                        !data.contains("cursor") || !data["cursor"].is_string() || data["cursor"].get<std::string>().empty())
+                        throw std::runtime_error("invalid v2 sync page");
+                    if (page == 0 && (data.value("reset", false) || data.value("full_snapshot", false)))
+                    { tracks.clear(); lists.clear(); }
+                    if (page > 0 && data.value("reset", false)) throw std::runtime_error("reset inside pagination");
+                    for (const auto& t : data["changed_tracks"])
+                    {
+                        const auto id = t.at("id").get<std::string>();
+                        if (!ValidId(id)) throw std::runtime_error("invalid track UUID");
+                        if (t.value("removed", false)) tracks.erase(id); else tracks[id] = t;
+                    }
+                    for (const auto& p : data["playlists"])
+                    {
+                        const auto id = p.at("id").get<std::string>();
+                        if (!ValidId(id)) throw std::runtime_error("invalid playlist ID");
+                        lists[id] = p;
+                    }
+                    for (const auto& id : data.value("deleted_tracks", json::array())) tracks.erase(id.get<std::string>());
+                    for (const auto& id : data.value("deleted_playlists", json::array())) lists.erase(id.get<std::string>());
+                    cursor = data.at("cursor").get<std::string>();
+                    if (data.value("has_more", false))
+                    {
+                        if (!seen.insert(cursor).second) throw std::runtime_error("repeated sync cursor");
+                        continue;
+                    }
+                    snapshot = {{"cache_schema",3},{"revision",data.at("revision")},{"cursor",cursor},
+                        {"changed_tracks",json::array()},{"playlists",json::array()}};
+                    for (const auto& t : tracks) snapshot["changed_tracks"].push_back(t.second);
+                    for (const auto& p : lists) snapshot["playlists"].push_back(p.second);
+                    std::sort(snapshot["playlists"].begin(), snapshot["playlists"].end(), [](const json& a, const json& b) {
+                        const auto ao = a.value("sort_order", 0), bo = b.value("sort_order", 0);
+                        if (ao != bo) return ao < bo;
+                        const auto an = a.value("name", ""), bn = b.value("name", "");
+                        return an != bn ? an < bn : a.at("id").get<std::string>() < b.at("id").get<std::string>();
+                    });
+                    completed = received = true;
+                    break;
+                }
+                if (!completed && !restart) throw std::runtime_error("too many sync pages");
+            }
+            if (!completed) { error_message = L"同步期间曲库持续变化，请稍后刷新。"; return false; }
         }
-        if (!snapshot.is_object() || !snapshot.contains("changed_tracks") || !snapshot["changed_tracks"].is_array() || !snapshot.contains("playlists") || !snapshot["playlists"].is_array())
-        {
-            if (received) error_message = L"服务器快照格式错误";
-            else error_message += L"；没有可用离线快照";
-            return false;
-        }
+        if (!valid(snapshot)) { error_message += L"；没有可用的 v2 离线快照"; return false; }
         std::map<std::string, RemoteTrack> tracks;
         for (const auto& value : snapshot["changed_tracks"])
         {
-            RemoteTrack track = ParseTrack(value);
-            tracks.emplace(track.id, std::move(track));
+            auto track = ParseTrack(value);
+            tracks[track.id] = std::move(track);
         }
-        if (received && refresh_artwork)
-        {
-            // Store refreshed artwork by ID. The playing snapshot keeps its
-            // own sidecars until the track is prepared from a new snapshot.
-            std::error_code file_error;
-            for (const auto& entry : tracks)
-            {
-                const std::wstring cached_path = CachePath(entry.second);
-                if (!cached_path.empty() && std::filesystem::is_regular_file(cached_path, file_error))
-                    RefreshArtwork(entry.second);
-            }
-        }
+        std::vector<RemotePlaylist> result;
         for (const auto& value : snapshot["playlists"])
         {
             RemotePlaylist playlist;
-            playlist.id = value.value("id", "");
+            playlist.id = value.at("id").get<std::string>();
             playlist.name = JsonString(value, "name");
             playlist.description = JsonString(value, "description");
-            if (value.contains("track_ids") && value["track_ids"].is_array())
-                for (const auto& identity : value["track_ids"])
-                {
-                    const std::string id = identity.get<std::string>();
-                    playlist.track_ids.push_back(id);
-                    auto found = tracks.find(id);
-                    if (found != tracks.end()) playlist.tracks.push_back(found->second);
-                }
+            const auto unavailable = value.value("unavailable_track_ids", std::vector<std::string>{});
+            for (const auto& identity : value.value("track_ids", json::array()))
+            {
+                const auto id = identity.get<std::string>();
+                if (!ValidId(id)) throw std::runtime_error("invalid member UUID");
+                playlist.track_ids.push_back(id);
+                auto found = tracks.find(id);
+                RemoteTrack track;
+                if (found != tracks.end()) track = found->second;
+                else { track.id = id; track.title = L"不可用曲目"; track.unavailable = true; }
+                if (std::find(unavailable.begin(), unavailable.end(), id) != unavailable.end()) track.unavailable = true;
+                playlist.tracks.push_back(std::move(track));
+            }
             if (value.contains("track_notes") && value["track_notes"].is_object())
                 for (auto note = value["track_notes"].begin(); note != value["track_notes"].end(); ++note)
                     if (note.value().is_string()) playlist.track_notes[note.key()] = Utf8ToWide(note.value().get<std::string>());
-            playlists.push_back(std::move(playlist));
+            result.push_back(std::move(playlist));
         }
+        if (m_cancel && *m_cancel) { error_message = L"任务已取消"; return false; }
         if (received)
         {
-            std::error_code file_error;
-            std::filesystem::create_directories(snapshot_path.parent_path(), file_error);
-            const std::wstring temporary = snapshot_path.wstring() + L".tmp";
+            std::filesystem::create_directories(snapshot_path.parent_path());
+            const auto temporary = snapshot_path.wstring() + L".tmp";
             std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
             output << snapshot.dump();
             output.close();
             if (!output || !MoveFileExW(temporary.c_str(), snapshot_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-                error_message = L"在线同步成功，但离线快照保存失败";
-            else error_message.clear();
+            { error_message = L"同步快照保存失败，请检查缓存目录权限。"; return false; }
+            // A successful complete sync revalidates this key, including re-enabled accounts.
+            std::error_code ignored;
+            std::filesystem::remove(snapshot_path.parent_path() / L"access-blocked", ignored);
+            error_message.clear();
         }
+        playlists = std::move(result);
+        if (received && refresh_artwork)
+            for (const auto& t : tracks) if (!t.second.unavailable) RefreshArtwork(t.second);
         return true;
     }
     catch (const std::exception& exception)
@@ -351,8 +432,55 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
     }
 }
 
+bool CRemoteLibraryClient::AccessBlocked() const
+{
+    std::error_code ignored;
+    return std::filesystem::exists(std::filesystem::path(m_cache_directory) / L"access-blocked", ignored);
+}
+
+void CRemoteLibraryClient::BlockAccess() const
+{
+    std::error_code ignored;
+    std::filesystem::create_directories(m_cache_directory, ignored);
+    std::ofstream marker(std::filesystem::path(m_cache_directory) / L"access-blocked", std::ios::trunc);
+    marker << "Online authorization required";
+}
+
+bool CRemoteLibraryClient::PlaylistAllowed(const std::string& id) const
+{
+    if (AccessBlocked()) return false;
+    try
+    {
+        std::ifstream in(std::filesystem::path(m_cache_directory) / L"library.json");
+        if (!in) return false;
+        auto j = json::parse(in);
+        for (const auto& p : j.at("playlists")) if (p.at("id") == id) return true;
+    }
+    catch (const std::exception&) {}
+    return false;
+}
+
+bool CRemoteLibraryClient::TrackAllowed(const RemoteTrack& track) const
+{
+    if (track.unavailable || AccessBlocked()) return false;
+    try
+    {
+        std::ifstream in(std::filesystem::path(m_cache_directory) / L"library.json");
+        if (!in) return true; // Direct track requests before the first library sync.
+        auto j = json::parse(in);
+        for (const auto& t : j.at("changed_tracks"))
+            if (t.at("id") == track.id)
+                return !t.value("removed", false) && !t.value("missing", false) && t.value("content_hash", "") == track.content_hash;
+    }
+    catch (const std::exception&) {}
+    return false;
+}
+
 bool CRemoteLibraryClient::EnsureCached(const RemoteTrack& track, std::wstring& cached_path, std::wstring& error_message, bool allow_network) const
 {
+    m_transport_failed = false;
+    if (m_cancel && *m_cancel) { error_message = L"任务已取消"; return false; }
+    if (!TrackAllowed(track)) { error_message = L"曲目不可用或授权已失效，请刷新歌单。"; return false; }
     cached_path = CachePath(track);
     if (cached_path.empty())
     {
@@ -382,7 +510,7 @@ bool CRemoteLibraryClient::EnsureCached(const RemoteTrack& track, std::wstring& 
     {
         const std::wstring temporary_path = cached_path + L".download";
         std::string ignored;
-        bool success = Download(L"/api/v1/media/" + Utf8ToWide(track.id), ignored, error_message, temporary_path, track.size);
+        bool success = Download(L"/api/v2/media/" + Utf8ToWide(track.id), ignored, error_message, temporary_path, track.size);
         if (success)
         {
             std::ifstream input(temporary_path, std::ios::binary);
@@ -418,7 +546,8 @@ bool CRemoteLibraryClient::EnsureCached(const RemoteTrack& track, std::wstring& 
 void CRemoteLibraryClient::RefreshArtwork(const RemoteTrack& track) const
 {
     const auto path = CachePath(track);
-    if (!path.empty()) EnsureCoverCached(track, path, true, false);
+    std::error_code ignored;
+    if (!path.empty() && std::filesystem::is_regular_file(path, ignored) && TrackAllowed(track)) EnsureCoverCached(track, path, true, false);
 }
 
 void CRemoteLibraryClient::EnsureCoverCached(const RemoteTrack& track, const std::wstring& cached_path, bool allow_network, bool apply_to_audio) const
@@ -444,7 +573,7 @@ void CRemoteLibraryClient::EnsureCoverCached(const RemoteTrack& track, const std
         std::string ignored;
         std::wstring error;
         // Artwork is optional: permission/network errors do not block audio.
-        if (Download(L"/api/v1/covers/" + Utf8ToWide(track.cover_id), ignored, error, temporary, 8 * 1024 * 1024)
+        if (Download(L"/api/v2/covers/" + Utf8ToWide(track.cover_id), ignored, error, temporary, 8 * 1024 * 1024)
             && FileHasHash(temporary, track.cover_id))
             verified = !!MoveFileExW(temporary.c_str(), asset.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
         std::filesystem::remove(temporary, file_error);
@@ -468,6 +597,8 @@ bool CRemoteLibraryClient::Request(const std::wstring& path, std::string& respon
 bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& response, std::wstring& error_message, const std::wstring& destination, unsigned __int64 maximum) const
 {
     m_transport_failed = false;
+    m_http_status = 0;
+    m_error_code.clear();
     if (m_cancel && *m_cancel) { error_message = L"任务已取消"; return false; }
     // Settings connection checks use a separate client from the library worker.
     // Serialize every HTTP request to respect keys with a concurrency limit of 1.
@@ -539,7 +670,20 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
     }
     else if (status < 200 || status >= 300)
     {
+        m_http_status = status;
+        std::string body;
+        std::array<char, 4096> data{};
+        DWORD read = 0;
+        while (body.size() < 65536 && WinHttpReadData(request, data.data(), DWORD(data.size()), &read) && read)
+            body.append(data.data(), read);
+        try { m_error_code = json::parse(body).at("error").value("code", ""); }
+        catch (const json::exception&) {}
         error_message = L"服务器返回 HTTP 状态码 " + std::to_wstring(status);
+        if (status == 401) error_message += L"：API Key 无效、已过期或账号不可用，请在管理网页检查。";
+        else if (status == 403) error_message += L"：缺少读取权限，请检查 Key 的范围和歌单授权。";
+        else if (status == 404) error_message += L"：曲目未授权、已下架或文件缺失，请刷新歌单。";
+        else if (status == 429) error_message += L"：请求或下载并发达到上限，请稍后重试。";
+        if (status == 401 || (status == 403 && path.rfind(L"/api/v2/covers/", 0) != 0)) BlockAccess();
         success = false;
     }
     std::ofstream output;
@@ -594,7 +738,9 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
 
 std::wstring CRemoteLibraryClient::CachePath(const RemoteTrack& track) const
 {
+    if (!m_cache_directory.empty() && ValidId(track.id) && track.unavailable)
+        return (std::filesystem::path(m_cache_directory) / L"unavailable" / (Utf8ToWide(track.id) + L".mp3")).wstring();
     if (m_cache_directory.empty() || !ValidHash(track.content_hash) || !ValidId(track.id) || !ValidId(track.format) || track.format.size() > 8)
         return {};
-    return (std::filesystem::path(m_cache_directory) / (Utf8ToWide(track.content_hash) + L"." + Utf8ToWide(track.format))).wstring();
+    return (std::filesystem::path(m_cache_directory) / (Utf8ToWide(track.id) + L"-" + Utf8ToWide(track.content_hash) + L"." + Utf8ToWide(track.format))).wstring();
 }
