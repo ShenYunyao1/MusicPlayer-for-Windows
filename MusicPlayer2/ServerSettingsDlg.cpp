@@ -1,6 +1,8 @@
 ﻿#include "stdafx.h"
 #include "ServerSettingsDlg.h"
 #include "Common.h"
+#include "Player.h"
+#include "RemoteLibraryManager.h"
 
 namespace { constexpr UINT WM_SERVER_TEST_DONE = WM_APP + 701; }
 
@@ -25,9 +27,9 @@ BOOL CServerSettingsDlg::OnInitDialog()
     SetDlgItemTextW(IDC_SERVER_CACHE, config.cache_directory.c_str());
     SetDlgItemTextW(IDC_SERVER_TEST, L"测试连接");
     SetDlgItemTextW(IDC_SERVER_URL_LABEL, L"服务器地址（HTTP / HTTPS）");
-    SetDlgItemTextW(IDC_SERVER_KEY_LABEL, L"API Key");
+    SetDlgItemTextW(IDC_SERVER_KEY_LABEL, L"账号的 API Key");
     SetDlgItemTextW(IDC_SERVER_CACHE_LABEL, L"缓存目录");
-    SetDlgItemTextW(IDC_SERVER_STATUS, L"填写服务器地址和 API Key，然后点击应用或确定。密钥由 Windows 加密保存。\n首次播放先下载完整曲目，离线缓存没有自动容量清理。");
+    SetDlgItemTextW(IDC_SERVER_STATUS, L"先在管理网页登录并完成首次改密，创建含 library:read、media:read 的 Key，授权本人歌单或系统 library。\n填写根地址（如 http://127.0.0.1:8080）并应用；密钥由 Windows 加密保存。首次播放按需完整下载。");
     return TRUE;
 }
 
@@ -37,7 +39,7 @@ RemoteLibraryConfig CServerSettingsDlg::ReadConfig()
     GetDlgItemTextW(IDC_SERVER_URL, url);
     GetDlgItemTextW(IDC_SERVER_KEY, key);
     GetDlgItemTextW(IDC_SERVER_CACHE, cache);
-    url.Trim(); cache.Trim();
+    url.Trim(); key.Trim(); cache.Trim();
     RemoteLibraryConfig config;
     config.url = url.GetString();
     config.api_key = CCommon::UnicodeToStr(key.GetString(), CodeType::UTF8_NO_BOM);
@@ -55,6 +57,11 @@ void CServerSettingsDlg::GetDataFromUi()
         return;
     }
     if (!config.Save(error)) AfxMessageBox((L"保存服务器配置失败：" + error).c_str());
+    else
+    {
+        CPlayer::GetInstance().ValidateRemotePlaylistAccess();
+        CRemoteLibraryManager::Instance().RemoveUnavailableRecentPlaylists();
+    }
 }
 
 void CServerSettingsDlg::OnTest()
@@ -70,7 +77,7 @@ void CServerSettingsDlg::OnTest()
         try
         {
             std::wstring error;
-            m_result = client.CheckConnection(error) ? L"连接成功，API Key 验证通过。" : L"连接失败：" + error;
+            m_result = client.CheckConnection(error) ? L"v2 连接成功，读取权限通过；无歌单时请检查 Key 的歌单授权。" : L"连接失败：" + error;
         }
         catch (const std::exception&) { m_result = L"连接失败：发生异常"; }
         ::PostMessageW(window, WM_SERVER_TEST_DONE, 0, 0);

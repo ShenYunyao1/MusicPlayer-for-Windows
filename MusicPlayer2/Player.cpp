@@ -155,7 +155,9 @@ void CPlayer::IniPlayList(bool play, MediaLibRefreshMode refresh_mode, SongKey s
         CPlaylistFile playlist;
         playlist.LoadFromFile(m_playlist_path);
         playlist.MoveToSongList(m_playlist);
-        CRemoteLibraryManager::Instance().LoadPlaylist(m_playlist_path);
+        auto& library=CRemoteLibraryManager::Instance();
+        if (!library.PlaylistUsable(m_playlist_path)) m_playlist.clear();
+        else library.LoadPlaylist(m_playlist_path);
     }
     //媒体库播放列表模式下
     else if (m_playlist_mode == PM_MEDIA_LIB)
@@ -1199,6 +1201,23 @@ bool CPlayer::BeforeIniPlayList(bool continue_play, bool force_continue_play)
 }
 
 #pragma region 列表初始化方法
+
+void CPlayer::ValidateRemotePlaylistAccess()
+{
+    if (!IsPlaylistMode() || CRemoteLibraryManager::Instance().PlaylistUsable(m_playlist_path)) return;
+    if (m_loading || !GetPlayStatusMutex().try_lock_for(std::chrono::milliseconds(1000))) return;
+    MusicControl(Command::CLOSE);
+    m_playlist.assign(1,SongInfo{});
+    m_index=0;
+    m_total_time=0;
+    m_current_position.fromInt(0);
+    m_song_length.fromInt(0);
+    m_remote_failed.clear();
+    m_remote_status=L"服务器歌单授权已变化，请刷新并重新选择。";
+    OnPlaylistChange();
+    AfterSetTrack();
+    GetPlayStatusMutex().unlock();
+}
 
 bool CPlayer::PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& error)
 {

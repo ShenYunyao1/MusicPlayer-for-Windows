@@ -14,9 +14,9 @@ struct RemoteLibraryTask
 {
     std::atomic<bool> done{false};
     std::shared_ptr<std::atomic<bool>> cancel{std::make_shared<std::atomic<bool>>(false)};
-    bool success{}, offline{}, local_only{};
+    bool success{}, offline{}, local_only{}, access_blocked{};
     bool continuation{}; // Worker-only: another chunk is queued before publishing done.
-    std::wstring path, status;
+    std::wstring path, status, namespace_id;
     std::vector<RemotePlaylist> playlists;
 };
 
@@ -38,6 +38,8 @@ public:
         std::wstring& path, std::wstring& error);
     std::vector<std::wstring> MaterializedPaths(const RemotePlaylist& playlist) const;
     bool LoadPlaylist(const std::wstring& path);
+    bool PlaylistUsable(const std::wstring& path) const;
+    void RemoveUnavailableRecentPlaylists();
     bool ApplyMetadata(SongInfo& song);
     bool IsRemote(const std::wstring& path);
     std::wstring TrackName(const std::wstring& path);
@@ -60,6 +62,5 @@ private:
     std::shared_ptr<RemoteLibraryTask> m_active, m_library;
     std::wstring m_library_namespace;
     std::map<std::wstring, Binding> m_tracks;
-    std::map<std::wstring, std::wstring> m_names;
     std::map<std::wstring, std::chrono::steady_clock::time_point> m_offline_until;
 };

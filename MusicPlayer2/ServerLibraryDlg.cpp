@@ -47,7 +47,9 @@ BOOL CServerLibraryDlg::OnInitDialog()
 
 bool CServerLibraryDlg::HasPlaylist() const
 {
-    return m_selected_playlist>=0 && m_selected_playlist<static_cast<int>(m_playlists.size()) && !m_playlists[m_selected_playlist].tracks.empty();
+    if (m_selected_playlist<0 || m_selected_playlist>=static_cast<int>(m_playlists.size())) return false;
+    const auto& tracks=m_playlists[m_selected_playlist].tracks;
+    return std::any_of(tracks.begin(),tracks.end(),[](const RemoteTrack& t){return !t.unavailable;});
 }
 void CServerLibraryDlg::UpdateButtons()
 {
@@ -115,7 +117,8 @@ void CServerLibraryDlg::RenderTracks()
     int row=0;
     for (const auto& track:playlist.tracks)
     {
-        m_track_list.InsertItem(row,track.title.c_str());
+        const auto title=track.unavailable ? L"[不可用] "+track.title : track.title;
+        m_track_list.InsertItem(row,title.c_str());
         m_track_list.SetItemText(row,1,track.artist.c_str());
         m_track_list.SetItemText(row,2,track.album.c_str());
         m_track_list.SetItemText(row,3,track.genre.c_str());
@@ -190,6 +193,16 @@ void CServerLibraryDlg::OnTimer(UINT_PTR timer)
     if (m_library_task && m_library_task->done.load(std::memory_order_acquire))
     {
         auto task=m_library_task; m_library_task.reset();
+        if (task->namespace_id!=RemoteLibraryConfig::Load().Client().CacheDirectory())
+        { OnTabEntered(); return; }
+        if ((task->success && !task->offline && !task->local_only) || task->access_blocked)
+        {
+            CPlayer::GetInstance().ValidateRemotePlaylistAccess();
+            CRemoteLibraryManager::Instance().RemoveUnavailableRecentPlaylists();
+            CMusicPlayerCmdHelper::RefreshMediaTabData(CMusicPlayerCmdHelper::ML_PLAYLIST);
+            CMusicPlayerDlg::GetInstance()->ShowPlayList(false);
+        }
+        if (task->access_blocked && !task->success) { m_playlists.clear(); RenderPlaylists(); }
         std::wstring refresh_error;
         bool updated_current = false, updated_lists = false;
         if (task->success && !task->offline && !task->local_only)
@@ -225,7 +238,11 @@ void CServerLibraryDlg::OnTimer(UINT_PTR timer)
                 if (updated_current) CMusicPlayerDlg::GetInstance()->ShowPlayList(false);
             }
         }
-        if (task->success) { SaveState(); m_playlists=task->playlists; RenderPlaylists(); }
+        if (task->success)
+        {
+            SaveState(); m_playlists=task->playlists; RenderPlaylists();
+            if (m_playlists.empty()) task->status+=L"当前 Key 没有可见歌单，请在管理网页为 Key 授权本人歌单或系统 library。";
+        }
         SetDlgItemTextW(IDC_SERVER_STATUS,(refresh_error.empty() ? task->status : refresh_error).c_str());
         // First run has no offline snapshot: obtain the library from the server.
         if (!task->success && task->local_only && !*task->cancel) OnRefresh();

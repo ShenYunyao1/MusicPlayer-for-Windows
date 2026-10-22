@@ -20,12 +20,13 @@ namespace
             {"content_hash",t.content_hash},{"format",t.format},{"size",t.size},{"path",t.path},
             {"cover_id",t.cover_id},{"cover_mime",t.cover_mime},{"cover_source",t.cover_source},
             {"duration_ms",t.duration_ms},{"bitrate_kbps",t.bitrate_kbps},{"sample_rate",t.sample_rate},
-            {"channels",t.channels},{"bits_per_sample",t.bits_per_sample}};
+            {"channels",t.channels},{"bits_per_sample",t.bits_per_sample},{"missing",t.unavailable},{"version",t.version}};
     }
     RemoteTrack ReadTrack(const json& j)
     {
         RemoteTrack t;
         t.id=j.value("id",""); t.title=Wide(j.value("title","")); t.artist=Wide(j.value("artist",""));
+        t.unavailable=j.value("missing",false) || j.value("removed",false); t.version=j.value("version",0ULL);
         t.album=Wide(j.value("album","")); t.genre=Wide(j.value("genre","")); t.comment=Wide(j.value("comment",""));
         t.lyrics=Wide(j.value("lyrics","")); t.content_hash=j.value("content_hash",""); t.format=j.value("format","");
         t.size=j.value("size",0ULL); t.path=j.value("path",""); t.cover_id=j.value("cover_id","");
@@ -99,6 +100,7 @@ std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::Library(bool refresh)
         if (m_library && !m_library->done) *m_library->cancel=true;
         m_library_namespace=client.CacheDirectory();
         task=m_library=std::make_shared<RemoteLibraryTask>();
+        task->namespace_id=client.CacheDirectory();
         task->local_only=!refresh;
     }
     client.SetCancellation(task->cancel);
@@ -106,6 +108,7 @@ std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::Library(bool refresh)
     Enqueue(task,[this,task,client,refresh]() mutable {
         if (!client.IsConfigured()) { task->status=L"请先配置服务器地址。"; return; }
         task->success=client.SyncLibrary(task->playlists,task->offline,task->status,!refresh);
+        task->access_blocked=client.AccessBlocked();
         if (refresh && task->offline && client.TransportFailed())
         {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -132,6 +135,8 @@ std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::Prepare(const std::wst
     auto task=std::make_shared<RemoteLibraryTask>(); task->path=path; task->local_only=!allow_network;
     binding.client.SetCancellation(task->cancel);
     Enqueue(task,[this,task,binding,allow_network]() mutable {
+        if (binding.client.CacheDirectory()!=RemoteLibraryConfig::Load().Client().CacheDirectory())
+        { task->status=L"服务器或 API Key 已切换，请重新选择歌单。"; return; }
         task->success=binding.client.EnsureCached(binding.track,task->path,task->status,false);
         if (task->success || !allow_network || *task->cancel) return;
         {
@@ -154,17 +159,22 @@ std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::SaveOffline(const Remo
 {
     auto task=std::make_shared<RemoteLibraryTask>();
     auto client=RemoteLibraryConfig::Load().Client(); client.SetCancellation(task->cancel);
-    SaveOfflineStep(task,client,std::make_shared<RemotePlaylist>(playlist),0);
+    auto available=std::make_shared<RemotePlaylist>(playlist);
+    available->tracks.erase(std::remove_if(available->tracks.begin(),available->tracks.end(),
+        [](const RemoteTrack& t){return t.unavailable;}),available->tracks.end());
+    SaveOfflineStep(task,client,available,0);
     return task;
 }
 
 void CRemoteLibraryManager::SaveOfflineStep(std::shared_ptr<RemoteLibraryTask> task, CRemoteLibraryClient client, std::shared_ptr<RemotePlaylist> playlist, size_t index)
 {
     Enqueue(task,[this,task,client,playlist,index] {
+        if (client.CacheDirectory()!=RemoteLibraryConfig::Load().Client().CacheDirectory() || !client.PlaylistAllowed(playlist->id))
+        { task->status=L"歌单授权或服务器配置已变化，请刷新。"; return; }
         if (index>=playlist->tracks.size())
         {
             task->success=true;
-            task->status=L"离线保存完成，共 "+std::to_wstring(index)+L" 首。";
+            task->status=L"离线保存完成，共 "+std::to_wstring(index)+L" 首；不可用曲目已跳过。";
             return;
         }
         if (!client.EnsureCached(playlist->tracks[index],task->path,task->status)) return;
@@ -192,7 +202,7 @@ std::vector<std::wstring> CRemoteLibraryManager::MaterializedPaths(const RemoteP
             std::ifstream input(entry.path(), std::ios::binary);
             const auto old_manifest = json::parse(input);
             const int version = old_manifest.value("version", 0);
-            if ((version == 1 || version == 2) && old_manifest.value("namespace", "") == namespace_id &&
+            if (version == 3 && old_manifest.value("namespace", "") == namespace_id &&
                 old_manifest.value("id", "") == playlist.id &&
                 (!playlist.id.empty() || old_manifest.value("name", "") == Utf8(playlist.name)))
                 paths.push_back(entry.path().wstring().substr(0, entry.path().wstring().size() - 12));
@@ -208,6 +218,7 @@ bool CRemoteLibraryManager::Materialize(const RemotePlaylist& playlist, const st
     try
     {
         auto client=RemoteLibraryConfig::Load().Client();
+        if (!client.PlaylistAllowed(playlist.id)) throw std::runtime_error("playlist no longer authorized; refresh required");
         const std::string name_or_id = playlist.id.empty() ? "name:" + Utf8(playlist.name) : "id:" + playlist.id;
         const std::string identity = Utf8(client.CacheDirectory()) + "\n" + name_or_id;
         const std::wstring stable_path = (std::filesystem::path(theApp.m_playlist_dir) /
@@ -221,7 +232,7 @@ bool CRemoteLibraryManager::Materialize(const RemotePlaylist& playlist, const st
             path = related_paths.front();
         else
             path = stable_path;
-        json manifest={{"version",2},{"namespace",Utf8(client.CacheDirectory())},{"name",Utf8(playlist.name)},{"id",playlist.id},{"tracks",json::array()}};
+        json manifest={{"version",3},{"namespace",Utf8(client.CacheDirectory())},{"name",Utf8(playlist.name)},{"id",playlist.id},{"tracks",json::array()}};
         std::vector<SongInfo> songs;
         for (const auto& track:playlist.tracks)
         {
@@ -255,9 +266,8 @@ bool CRemoteLibraryManager::LoadPlaylist(const std::wstring& path)
         auto manifest=json::parse(in);
         auto client=RemoteLibraryConfig::Load().Client();
         const int version = manifest.value("version", 0);
-        if ((version != 1 && version != 2) || manifest.value("namespace","")!=Utf8(client.CacheDirectory())) return false;
+        if (version != 3 || manifest.value("namespace","")!=Utf8(client.CacheDirectory()) || !client.PlaylistAllowed(manifest.value("id",""))) return false;
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_names[path]=Wide(manifest.value("name",""));
         for (const auto& value:manifest.at("tracks"))
         {
             auto track=ReadTrack(value); auto cache=client.CachePath(track);
@@ -266,6 +276,34 @@ bool CRemoteLibraryManager::LoadPlaylist(const std::wstring& path)
         return true;
     }
     catch (const std::exception&) { return false; }
+}
+
+bool CRemoteLibraryManager::PlaylistUsable(const std::wstring& path) const
+{
+    if (!CCommon::FileExist(path+L".remote.json")) return true;
+    try
+    {
+        std::ifstream in(path+L".remote.json",std::ios::binary);
+        const auto manifest=json::parse(in);
+        auto client=RemoteLibraryConfig::Load().Client();
+        return manifest.value("version",0)==3 && manifest.value("namespace","")==Utf8(client.CacheDirectory()) &&
+            client.PlaylistAllowed(manifest.value("id",""));
+    }
+    catch (const std::exception&) { return false; }
+}
+
+void CRemoteLibraryManager::RemoveUnavailableRecentPlaylists()
+{
+    std::error_code ignored;
+    for (const auto& entry : std::filesystem::directory_iterator(theApp.m_playlist_dir,ignored))
+    {
+        const auto filename=entry.path().wstring();
+        const std::wstring suffix=L".playlist.remote.json";
+        if (filename.size()<suffix.size() || filename.compare(filename.size()-suffix.size(),suffix.size(),suffix)!=0) continue;
+        const auto path=filename.substr(0,filename.size()-12);
+        if (!PlaylistUsable(path)) CRecentList::Instance().RemoveItem({LT_PLAYLIST,path});
+    }
+    CRecentList::Instance().SaveData();
 }
 
 bool CRemoteLibraryManager::ApplyMetadata(SongInfo& song)
@@ -299,7 +337,6 @@ std::wstring CRemoteLibraryManager::TrackName(const std::wstring& path)
 }
 std::wstring CRemoteLibraryManager::PlaylistName(const std::wstring& path)
 {
-    { std::lock_guard<std::mutex> lock(m_mutex); auto it=m_names.find(path); if (it!=m_names.end()) return it->second; }
     // Recent-list rendering must not rebind current playback metadata to an old snapshot.
     try
     {
@@ -307,9 +344,9 @@ std::wstring CRemoteLibraryManager::PlaylistName(const std::wstring& path)
         if (!in) return {};
         auto manifest=json::parse(in);
         const int version = manifest.value("version",0);
-        if (version != 1 && version != 2) return {};
+        auto client=RemoteLibraryConfig::Load().Client();
+        if (version != 3 || manifest.value("namespace","")!=Utf8(client.CacheDirectory()) || !client.PlaylistAllowed(manifest.value("id",""))) return L"不可用的服务器歌单";
         auto name=Wide(manifest.value("name",""));
-        std::lock_guard<std::mutex> lock(m_mutex); m_names[path]=name;
         return name;
     }
     catch (const std::exception&) { return {}; }

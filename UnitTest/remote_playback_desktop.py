@@ -47,6 +47,8 @@ k.ReadProcessMemory.argtypes = [w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.
 k.VirtualFreeEx.argtypes = [w.HANDLE, c.c_void_p, c.c_size_t, w.DWORD]
 k.CloseHandle.argtypes = [w.HANDLE]
 k.LocalFree.argtypes = [c.c_void_p]
+k.OpenMutexW.argtypes = [w.DWORD, w.BOOL, w.LPCWSTR]
+k.OpenMutexW.restype = w.HANDLE
 
 
 class Blob(c.Structure):
@@ -98,6 +100,16 @@ def remote_manifests(output, playlist_id):
     return matches
 
 
+def protect_key(secret):
+    data = (c.c_ubyte * len(secret)).from_buffer_copy(secret)
+    blob, encrypted = Blob(len(data), data), Blob()
+    assert crypt.CryptProtectData(c.byref(blob), "MusicPlayer2 server key", None, None, None, 1, c.byref(encrypted))
+    try:
+        return list(c.string_at(encrypted.data, encrypted.size))
+    finally:
+        k.LocalFree(encrypted.data)
+
+
 class Fixture(ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Handler)
@@ -109,6 +121,9 @@ class Fixture(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self.revision = 1
         self.ids = ["1", "2", "3"]
+        self.auth_status = 0
+        self.empty_grants = False
+        self.unavailable = set()
 
     def snapshot(self):
         tracks = [{"id": n, "title": "测试曲目" + n, "artist": "测试作者",
@@ -117,15 +132,23 @@ class Fixture(ThreadingHTTPServer):
                    "duration_ms": 3000, "bitrate_kbps": 128, "sample_rate": 8000,
                    "channels": 1, "bits_per_sample": 16} for n, data in self.audio.items()]
         long_tracks = [dict(tracks[0], id="browse-" + str(n), title="浏览曲目" + str(n)) for n in range(60)]
-        return {"revision": self.revision, "full_snapshot": True, "changed_tracks": tracks + long_tracks,
-                "playlists": [{"id": "main", "name": "完整测试歌单", "track_ids": self.ids},
-                              {"id": "browse", "name": "浏览状态测试", "track_ids": [t["id"] for t in long_tracks]},
-                              {"id": "race", "name": "下载竞态测试", "track_ids": ["4", "5", "6"]},
-                              {"id": "outage", "name": "断网混合缓存", "track_ids": ["4", "1", "6"]}]}
+        result = {"revision": self.revision, "full_snapshot": True, "reset": True,
+                "cursor": "desktop-" + str(self.revision), "has_more": False,
+                "changed_tracks": [t for t in tracks + long_tracks if t["id"] not in self.unavailable],
+                "playlists": [{"id": "main", "name": "完整测试歌单", "sort_order": 0, "track_ids": self.ids},
+                              {"id": "browse", "name": "浏览状态测试", "sort_order": 1, "track_ids": [t["id"] for t in long_tracks]},
+                              {"id": "race", "name": "下载竞态测试", "sort_order": 2, "track_ids": ["4", "5", "6"]},
+                              {"id": "outage", "name": "断网混合缓存", "sort_order": 3, "track_ids": ["4", "1", "6"]}]}
+        for playlist in result["playlists"]:
+            playlist["unavailable_track_ids"] = [n for n in playlist["track_ids"] if n in self.unavailable]
+            playlist["track_notes"] = {n: "保留备注" for n in playlist["track_ids"] if n in self.unavailable}
+        if self.empty_grants:
+            result.update(changed_tracks=[], playlists=[])
+        return result
 
     def media(self):
         with self.lock:
-            return [path.rsplit("/", 1)[1] for path in self.requests if path.startswith("/api/v1/media/")]
+            return [path.rsplit("/", 1)[1] for path in self.requests if path.startswith("/api/v2/media/")]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -139,9 +162,12 @@ class Handler(BaseHTTPRequestHandler):
             self.server.maximum = max(self.server.maximum, self.server.active)
         try:
             assert self.headers.get("X-API-Key") == "desktop-fixture-key"
-            if self.path.startswith("/api/v1/sync"):
-                body, status = json.dumps(self.server.snapshot()).encode(), 200
-            elif self.path.startswith("/api/v1/media/"):
+            if self.path.startswith("/api/v2/sync"):
+                if self.server.auth_status:
+                    body, status = b'{"error":{"code":"DENIED"}}', self.server.auth_status
+                else:
+                    body, status = json.dumps(self.server.snapshot()).encode(), 200
+            elif self.path.startswith("/api/v2/media/"):
                 number = self.path.rsplit("/", 1)[1]
                 if number in self.server.gates:
                     self.server.gates[number].wait(12)
@@ -232,17 +258,23 @@ class Desktop:
         self.write(item)
         self.send(self.control(8107), 4139, row, self.buffer)
 
-    def library(self):
+    def library(self, expect_lists=True):
         self.command(32793)
         until(lambda: self.control(1083), "library tab")
-        self.server_tab()
+        # The tab HWND exists while OnInitDialog is still creating earlier
+        # pages. Sending a selection/close during that nested initialization can
+        # destroy the dialog before its remaining child pointers are used.
+        until(lambda: self.control(8110) and u.GetParent(u.GetParent(self.control(8110))) == self.control(1083),
+              "server page registered in initialized tab control")
+        self.server_tab(expect_lists)
 
-    def server_tab(self):
+    def server_tab(self, expect_lists=True):
         tab = self.control(1083)
         count = self.send(tab, 4868)
         # Let the tab control generate its own in-process notifications.
         self.send(tab, 4912, count - 1)  # TCM_SETCURFOCUS
-        until(lambda: self.send(self.control(8106), 395) > 0, "server playlists")
+        if expect_lists:
+            until(lambda: self.send(self.control(8106), 395) > 0, "server playlists")
 
     def select_playlist(self, row):
         hwnd = self.control(8106)
@@ -325,11 +357,7 @@ show_desktop_lyric=false
 [hot_key]
 hot_key_enable=false
 """, encoding="utf-8")
-    data = (c.c_ubyte * len(b"desktop-fixture-key")).from_buffer_copy(b"desktop-fixture-key")
-    blob, encrypted = Blob(len(data), data), Blob()
-    assert crypt.CryptProtectData(c.byref(blob), "MusicPlayer2 server key", None, None, None, 1, c.byref(encrypted))
-    protected = list(c.string_at(encrypted.data, encrypted.size))
-    k.LocalFree(encrypted.data)
+    protected = protect_key(b"desktop-fixture-key")
     (output / "remote-library.json").write_text(json.dumps({"url": f"http://127.0.0.1:{fixture.server_port}",
         "cache_directory": str(output / "cache"), "protected_key": protected}), encoding="utf-8")
     (output / "playlist").mkdir()
@@ -343,6 +371,10 @@ hot_key_enable=false
 
 
 def run(args):
+    mutex = k.OpenMutexW(0x100000, False, "bXS1E7joK0Kh")
+    if mutex:
+        k.CloseHandle(mutex)
+        raise RuntimeError("Close the existing MusicPlayer2 instance before desktop regression (global single-instance mutex).")
     fixture = Fixture()
     thread = threading.Thread(target=fixture.serve_forever, daemon=True)
     thread.start()
@@ -433,6 +465,24 @@ def run(args):
         desktop.command(32779)
         print("PASS cached zero HTTP, browse selection/scroll recovery, live linked playlist refresh", flush=True)
 
+        fixture.unavailable = {"1", "4"}
+        desktop.click(8108)
+        until(lambda: "不可用" in desktop.text(8107, 0, 0), "unavailable placeholder visible")
+        assert desktop.send(desktop.control(8107), 4100) == 4, "unavailable member must retain its position"
+        desktop.command(32804)
+        desktop.click(8110)
+        until(lambda: "测试曲目2" in desktop.title(), "unavailable first track skipped to cached second track")
+        desktop.command(32779)
+        before = len(fixture.requests)
+        desktop.click(8109)
+        until(lambda: "离线保存完成" in next((name for _, name, ident in desktop.windows() if ident == 8105), ""),
+              "offline save skips unavailable members")
+        assert len(fixture.requests) == before, "offline save should only use cached available tracks"
+        fixture.unavailable.clear()
+        desktop.click(8108)
+        until(lambda: desktop.text(8107, 0, 0) == "测试曲目1", "restored UUID visible")
+        print("PASS unavailable placeholder retains order and skips playback; restoration reuses UUID", flush=True)
+
         desktop.select_playlist(2)
         desktop.command(32804)
         fixture.gates["4"] = threading.Event()
@@ -450,8 +500,8 @@ def run(args):
         time.sleep(4)
         assert "测试曲目5" in desktop.title(), "old completion must not replace the next track"
         assert fixture.media()[before:] == ["4", "5"], "stop must not restart or advance playback"
-        assert not list((output / "cache").rglob(hashlib.sha256(fixture.audio["4"]).hexdigest() + ".wav"))
-        assert not list((output / "cache").rglob(hashlib.sha256(fixture.audio["5"]).hexdigest() + ".wav"))
+        assert not list((output / "cache").rglob("4-" + hashlib.sha256(fixture.audio["4"]).hexdigest() + ".wav"))
+        assert not list((output / "cache").rglob("5-" + hashlib.sha256(fixture.audio["5"]).hexdigest() + ".wav"))
         print("PASS next/stop download races, stale results discarded", flush=True)
 
         fixture.gates.pop("4")
@@ -469,6 +519,29 @@ def run(args):
             assert fixture.media()[before:] == failed, "all failures must stop even in looping modes"
         print("PASS all-failed bounded stop in all six playback modes", flush=True)
 
+        fixture.auth_status = 401
+        desktop.click(8108)
+        until(lambda: desktop.send(desktop.control(8106), 395) == 0, "denied key clears server browser")
+        until(lambda: desktop.send(desktop.control(1015), 4100) == 0, "denied key clears current queue")
+        fixture.auth_status = 0
+        desktop.click(8108)
+        until(lambda: desktop.send(desktop.control(8106), 395) == 4, "re-enabled key refresh restores browser")
+        desktop.select_playlist(0)
+        desktop.click(8110)
+        until(lambda: "测试曲目1" in desktop.title(), "same re-enabled key plays cached audio")
+        fixture.empty_grants = True
+        desktop.click(8108)
+        until(lambda: desktop.send(desktop.control(8106), 395) == 0, "empty grant reset clears browser")
+        until(lambda: desktop.send(desktop.control(1015), 4100) == 0, "empty grant reset clears current queue")
+        fixture.empty_grants = False
+        desktop.click(8108)
+        until(lambda: desktop.send(desktop.control(8106), 395) == 4, "regrant restores browser")
+        print("PASS authorization denial and zero-grant reset clear UI/queue; same key revalidation recovers", flush=True)
+
+        # Start from a different title: a preceding refresh can leave cached song
+        # 1 selected, which otherwise satisfies the offline wait before playback.
+        desktop.command(32783)
+        until(lambda: "测试曲目2" in desktop.title(), "distinct track before offline transition")
         fixture.deny.clear()
         fixture.shutdown()
         fixture.server_close()
@@ -476,6 +549,7 @@ def run(args):
         desktop.command(32804)
         desktop.select_playlist(3)
         desktop.click(8110)
+        until(lambda: "测试曲目4" in desktop.text(1015, 0, 1), "outage playlist loaded")
         until(lambda: "测试曲目1" in desktop.title(), "offline missing track skipped to cached track", 20)
         desktop.close_library()
         time.sleep(4)
@@ -494,6 +568,25 @@ def run(args):
         assert desktop.send(desktop.control(1015), 4100) == 3
         assert len(fixture.requests) == count, "offline restart must use persistent snapshots"
         print("PASS real server outage, cached fallback, no order wrap, offline restart recovery", flush=True)
+        desktop.close()
+        desktop = None
+        config_path = output / "remote-library.json"
+        original_config = config_path.read_bytes()
+        config = json.loads(original_config)
+        config["protected_key"] = protect_key(b"different-account-key")
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        process = subprocess.Popen([str(output / "MusicPlayer2.exe")], cwd=output)
+        desktop = Desktop(process)
+        desktop.library(expect_lists=False)
+        until(lambda: any("HTTP" in name and "failed" in name for _, name, ident in desktop.windows() if ident == 8105),
+              "new key cannot reuse another key's offline snapshot")
+        assert desktop.send(desktop.control(1015), 4100) == 0, "old linked playlist opened as local audio under a new key"
+        assert desktop.send(desktop.control(8106), 395) == 0, "old remote entries leaked to a new key"
+        assert list((output / "cache").rglob("*.wav")), "key switching must not delete cached media bytes"
+        desktop.close()
+        desktop = None
+        config_path.write_bytes(original_config)
+        print("PASS different key cannot reopen another key's linked playlist or offline cache", flush=True)
         assert fixture.maximum == 1, "API Key requests must be serialized"
         print("Artifacts:", output, flush=True)
     except Exception:
