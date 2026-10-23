@@ -100,7 +100,7 @@ void CServerLibraryDlg::RenderPlaylists()
     for (size_t i=0;i<m_playlists.size();++i)
     {
         const auto& playlist=m_playlists[i];
-        const auto label=playlist.Available() ? (playlist.read_only ? L"[订阅] "+playlist.name : playlist.name) : L"[失效] "+playlist.name;
+        const auto label=playlist.Available() ? (playlist.read_only ? (playlist.visibility=="shared" ? L"[分享] " : L"[订阅] ")+playlist.name : playlist.name) : L"[失效] "+playlist.name;
         m_playlist_list.AddString(label.c_str());
         if (m_playlists[i].id==m_state.playlist_id) m_selected_playlist=static_cast<int>(i);
     }
@@ -118,7 +118,7 @@ void CServerLibraryDlg::RenderTracks()
     const auto& playlist=m_playlists[m_selected_playlist];
     if (!playlist.Available())
     {
-        SetDlgItemTextW(IDC_SERVER_NOTES,(playlist.UnavailableReason()+L"；重新公开或启用后在线刷新可恢复，亦可在网页取消订阅。").c_str());
+        SetDlgItemTextW(IDC_SERVER_NOTES,(playlist.UnavailableReason()+L"；恢复可见性、分享授权和账户状态后在线刷新可用，亦可在网页取消订阅。").c_str());
         return;
     }
     SetDlgItemTextW(IDC_SERVER_NOTES,playlist.description.c_str());

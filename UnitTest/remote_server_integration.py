@@ -88,7 +88,7 @@ def run(args):
                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 health = wait_for(lambda: json.load(urllib.request.urlopen(base + "/api/v2/health", timeout=2)))
-                assert health["version"] == "0.12.0", "integration requires the latest server contract"
+                assert health["version"] == "0.13.0", "integration requires the latest server contract"
                 admin = Account(base)
                 admin.login("admin", password)
                 tracks = wait_for(lambda: (lambda t: t if len(t) == 105 else None)(admin.call("tracks")))
@@ -184,6 +184,27 @@ def run(args):
                 user.call("subscriptions/" + source_id, "DELETE")
                 assert all(p["id"] != source_id for p in native()["playlists"])
                 print("PASS real subscriptions: personal notes, same-key suspend/restore, durable invalid state, independent grants, deletion and unsubscribe", flush=True)
+                shared_id = str(uuid.uuid4())
+                shared = admin.call("playlists", "POST", {"id": shared_id, "name": "Account-only source", "track_ids": ids,
+                                                          "track_notes": {ids[0]: "private author note"}})
+                shared = admin.call("playlists/" + shared_id + "/visibility", "PUT", {"visibility": "shared"}, shared["version"])
+                invitation = admin.call("playlists/" + shared_id + "/invitations", "POST", {"username": "player-test"}, shared["version"])
+                assert not any(p["id"] == shared_id for p in user.call("playlists")), "pending invite auto-subscribed"
+                invitation = user.call("invitations/" + invitation["id"] + "/accept", "POST", version=invitation["version"])
+                user.call("auth/keys/" + key["id"], "PATCH", {"allowed_playlist_ids": [playlist_id, shared_id]})
+                received = next(p for p in native(download=True)["playlists"] if p["id"] == shared_id)
+                assert received["visibility"] == "shared" and received["allowed"] and not received["notes"], received
+                invitation = admin.call("playlists/" + shared_id + "/invitations/" + invitation["id"], "DELETE", version=invitation["version"])
+                revoked = next(p for p in native()["playlists"] if p["id"] == shared_id)
+                assert revoked["subscription_reason"] == "share_revoked" and "撤回" in revoked["reason_text"] and not revoked["allowed"], revoked
+                assert not next(p for p in native(local=True)["playlists"] if p["id"] == shared_id)["allowed"]
+                invitation = admin.call("playlists/" + shared_id + "/invitations/" + invitation["id"] + "/resend", "POST", version=invitation["version"])
+                assert not next(p for p in native()["playlists"] if p["id"] == shared_id)["allowed"], "resend restored grant without acceptance"
+                user.call("invitations/" + invitation["id"] + "/accept", "POST", version=invitation["version"])
+                assert next(p for p in native()["playlists"] if p["id"] == shared_id)["allowed"], "same key did not recover after explicit acceptance"
+                user.call("subscriptions/" + shared_id, "DELETE")
+                assert all(p["id"] != shared_id for p in native()["playlists"])
+                print("PASS real account-bound sharing: explicit acceptance and grants, note isolation, revoke/reset/offline denial, resend requires acceptance and same-key recovery", flush=True)
                 server.terminate()
                 server.wait(10)
                 offline = native(download=True)

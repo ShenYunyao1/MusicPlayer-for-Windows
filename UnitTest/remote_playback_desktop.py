@@ -126,6 +126,7 @@ class Fixture(ThreadingHTTPServer):
         self.empty_grants = False
         self.unavailable = set()
         self.subscription_invalid = False
+        self.subscription_reason = "private"
 
     def snapshot(self):
         tracks = [{"id": n, "title": "测试曲目" + n, "artist": "测试作者",
@@ -144,9 +145,9 @@ class Fixture(ThreadingHTTPServer):
         for playlist in result["playlists"]:
             playlist["unavailable_track_ids"] = [n for n in playlist["track_ids"] if n in self.unavailable]
             playlist["track_notes"] = {n: "保留备注" for n in playlist["track_ids"] if n in self.unavailable}
-        result["playlists"][0].update(read_only=True, subscription_status="active")
+        result["playlists"][0].update(read_only=True, visibility="shared", subscription_status="active")
         if self.subscription_invalid:
-            result["playlists"][0].update(subscription_status="invalid", subscription_reason="private",
+            result["playlists"][0].update(subscription_status="invalid", subscription_reason=self.subscription_reason,
                                            track_ids=[], track_notes={}, unavailable_track_ids=[])
         if self.empty_grants:
             result.update(changed_tracks=[], playlists=[])
@@ -551,6 +552,20 @@ def run(args):
         desktop.click(8110)
         until(lambda: "测试曲目1" in desktop.title(), "same subscription resumes after republish")
         print("PASS invalid subscription remains visible with reason, stops queue/disables playback and offline save; independent grant and same-key recovery", flush=True)
+
+        fixture.subscription_reason = "share_revoked"
+        fixture.subscription_invalid = True
+        desktop.click(8108)
+        until(lambda: any("分享尚未接受或已被撤回" in name for _, name, ident in desktop.windows() if ident == 8112),
+              "revoked account-bound sharing reason")
+        assert not u.IsWindowEnabled(desktop.control(8110)) and not u.IsWindowEnabled(desktop.control(8109))
+        until(lambda: desktop.send(desktop.control(1015), 4100) == 0, "revoked share stopped playback queue")
+        fixture.subscription_invalid = False
+        desktop.click(8108)
+        until(lambda: desktop.send(desktop.control(8107), 4100) == 4, "reaccepted share restored members")
+        desktop.click(8110)
+        until(lambda: "测试曲目1" in desktop.title(), "same key resumes reaccepted share")
+        print("PASS account-bound share revocation reason, disabled entry/queue, and reacceptance recovery", flush=True)
 
         fixture.auth_status = 401
         desktop.click(8108)

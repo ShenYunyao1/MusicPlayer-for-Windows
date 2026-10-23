@@ -29,7 +29,7 @@ BOOL CServerSettingsDlg::OnInitDialog()
     SetDlgItemTextW(IDC_SERVER_URL_LABEL, L"服务器地址（HTTP / HTTPS）");
     SetDlgItemTextW(IDC_SERVER_KEY_LABEL, L"账号的 API Key");
     SetDlgItemTextW(IDC_SERVER_CACHE_LABEL, L"缓存目录");
-    SetDlgItemTextW(IDC_SERVER_STATUS, L"先在管理网页登录并完成首次改密，创建含 library:read、media:read 的 Key，授权本人歌单或系统 library。\n填写根地址（如 http://127.0.0.1:8080）并应用；密钥由 Windows 加密保存。首次播放按需完整下载。");
+    SetDlgItemTextW(IDC_SERVER_STATUS, L"先在网页登录并完成首次改密，接受分享或订阅后，创建含 library:read、media:read 的 Key，显式选择本人歌单、订阅或全局曲库。\n填写根地址（如 http://127.0.0.1:8080）并应用；密钥由 Windows 加密保存。首次播放按需完整下载。");
     return TRUE;
 }
 

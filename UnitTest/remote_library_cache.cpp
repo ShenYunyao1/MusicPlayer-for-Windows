@@ -68,7 +68,8 @@ int wmain(int argc, wchar_t** argv)
             {
                 json playlist={{"id",p.id},{"track_ids",p.track_ids},{"notes",json::object()},{"tracks",json::array()},
                     {"read_only",p.read_only},{"subscription_status",p.subscription_status},
-                    {"subscription_reason",p.subscription_reason},{"allowed",client.PlaylistAllowed(p.id)}};
+                    {"subscription_reason",p.subscription_reason},{"allowed",client.PlaylistAllowed(p.id)},
+                    {"visibility",p.visibility},{"reason_text",p.Available()?"":Utf8(p.UnavailableReason())}};
                 for (const auto& note:p.track_notes) playlist["notes"][note.first]=Utf8(note.second);
                 for (const auto& t:p.tracks)
                 {

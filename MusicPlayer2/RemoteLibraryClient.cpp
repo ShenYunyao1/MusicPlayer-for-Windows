@@ -121,6 +121,7 @@ namespace
         playlist.name = JsonString(value, "name");
         playlist.description = JsonString(value, "description");
         playlist.read_only = value.value("read_only", false);
+        playlist.visibility = value.value("visibility", "private");
         playlist.subscription_status = value.value("subscription_status", "");
         playlist.subscription_reason = value.value("subscription_reason", "");
         playlist.source_owner_name = JsonString(value, "source_owner_name");
