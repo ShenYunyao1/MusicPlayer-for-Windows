@@ -35,7 +35,13 @@ def main():
             path.write_text("DO_NOT_DISTRIBUTE_fixture_secret", encoding="utf-8")
         environment = dict(os.environ, MUSIC_PLAYER_NO_PAUSE="1")
 
-        def package(wrapper=False):
+        def package(wrapper=False, clean_caller=False):
+            if clean_caller:
+                quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+                script = (f"& {quote(root / 'package.ps1')} -BuildDirectory {quote(build)} -OutputDirectory {quote(output)}; "
+                          "if ($LASTEXITCODE -ne 0) { throw 'Packaging did not return explicit success' }")
+                return subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                                      cwd=temporary, env=environment, capture_output=True, timeout=90)
             if wrapper:
                 command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", "call", str(root / "package.bat")]
             else:
@@ -46,6 +52,8 @@ def main():
         result = package(wrapper=True)
         assert result.returncode == 0, result.stdout.decode(errors="replace") + result.stderr.decode(errors="replace")
         assert b"PACKAGE SUCCEEDED" in result.stdout
+        clean_result = package(clean_caller=True)
+        assert clean_result.returncode == 0, clean_result.stdout.decode(errors="replace") + clean_result.stderr.decode(errors="replace")
         archive_path = output / "MusicPlayer2.zip"
         expected = {"MusicPlayer2/" + name for name in core}
         expected.update("MusicPlayer2/" + name for name in ("global_cfg.ini", "LICENSE", "README.txt", "BUILD-INFO.txt"))
@@ -73,7 +81,7 @@ def main():
         (build / "bass.dll").write_bytes(data)
         assert package().returncode != 0, "Win32 DLL accepted in x64 package"
         assert hashlib.sha256(archive_path.read_bytes()).hexdigest() == digest
-        print("Package checks passed: BAT from foreign cwd/space paths, runtime allowlist, no private data, embedded Git, SHA-256, missing/wrong-architecture failure preserves existing ZIP.")
+        print("Package checks passed: explicit clean-shell success, BAT from foreign cwd/space paths, runtime allowlist, no private data, embedded Git, SHA-256, missing/wrong-architecture failure preserves existing ZIP.")
 
 
 if __name__ == "__main__":

@@ -110,6 +110,7 @@ public static class ClientPackageResources {
     Write-Host "SHA-256: $hash"
     Write-Host "Git: $($stampLines[1].Trim())"
     Write-Host 'Distribute this ZIP, not the build directory.'
+    exit 0
 } catch {
     Write-Host "PACKAGE FAILED: $($_.Exception.Message)" -ForegroundColor Red
     exit 1

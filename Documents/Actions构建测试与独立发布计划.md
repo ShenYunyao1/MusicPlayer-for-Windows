@@ -52,3 +52,5 @@
 2026-10-24：用户授权应用 Actions 并推送源码，随后要求调整仓库名称；仓库更名为 `MusicPlayer-for-Windows`，本地 origin 同步更改，upstream 保留。首次推送发现客户端是浅克隆，GitHub 拒收缺失历史对象的包；补全 upstream 历史后重试，不使用强制推送，不推送版本标签。
 
 2026-10-24：提交 `0160e120e00b7aea5bcf78764db5390c76fb07e0` 已成功推送至 origin/master，GitHub 默认分支为 master，Actions 权限 enabled=true。远程已存在 `.github/workflows/windows-release.yml`，但首次导入后的工作流注册及运行列表暂为空；仍在核对首次 Actions，尚未标记远程测试通过或正式发行。
+
+2026-10-24：工作流已注册为 active，首次 push 运行 `39998738941` 已启动；为验证最新提交，显式触发 `39998912814` 并取消较早的重复运行。最新运行的 x64／x86 编译、布局、发布门禁、协议／TLS／缓存、真实服务器集成和白名单打包回归全部通过，最终打包步骤误判失败：package.ps1 输出 PACKAGE SUCCEEDED，但没有设置成功返回码，干净 PowerShell 会话的 LASTEXITCODE 为 null，调用方将其判为非零。已先添加干净调用方回归并复现同样失败，再补齐成功时 exit 0；修复后的远程整体验收仍待重新运行。
