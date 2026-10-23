@@ -6,7 +6,9 @@
 
 源码推送 → 自动化验证 → 固定名称构建产物；推送匹配版本的 `vX.Y.Z` 标签 → 所有门禁通过 → 草稿上传完整资产 → 公开正式 Release。开发阶段本地针对性检查并提交，未经本次明确授权不推送、不创建远程仓库、不发布。
 
-独立公开仓库已创建为 [ShenYunyao1/MusicPlayer2](https://github.com/ShenYunyao1/MusicPlayer2)，本地 `origin` 已指向该仓库；原作者 `zhongyang219/MusicPlayer2` 保留为 `upstream`，`remote.pushDefault` 为 `origin`。仓库创建阶段未推送任何代码，远程仍为空，尚未触发 Actions。
+独立公开仓库已按用户要求命名为 [ShenYunyao1/MusicPlayer-for-Windows](https://github.com/ShenYunyao1/MusicPlayer-for-Windows)，本地 `origin` 已指向该仓库；原作者 `zhongyang219/MusicPlayer2` 保留为 `upstream`，`remote.pushDefault` 为 `origin`。仓库创建阶段未推送任何代码；首次源码推送及 Actions 验收在下方单独记录。
+
+当前服务器与客户端名称均为暂定名称。用户确定正式名称后，两端在同一命名调整阶段统一更新仓库、界面标识、文档与链接，并检查 Actions、发行包、部署及更新器引用，避免只改其中一端。当前不调整服务器仓库名或固定产物名。
 
 本期正式分发沿用已验证的 Windows x64 白名单 ZIP。保留 x86 编译检查，x86 分发需另行完善其依赖与打包验收，不发布旧式零散 EXE/DLL 包。发行版本由 `client-release.json` 独立维护，从 0.1.0 开始；上游程序版本 2.78 和服务器协议适配标识分别保留，发行身份以 ZIP 中 BUILD-INFO 与清单为准。
 
@@ -45,3 +47,5 @@
 未推送、未触发远程 Actions、未发布 Release，未连接或变更云服务器。交互桌面播放不属于本次工作流调整的本地验收范围。
 
 2026-10-24：用户授权创建新仓库后，通过已登录的 ShenYunyao1 账号创建公开空仓库，GitHub 返回 ADMIN 权限、isPrivate=false、isEmpty=true。本地原 origin 重命名为 upstream，新 origin 为用户仓库；默认推送目标为 origin。仅核对仓库信息与 Git 远程配置，没有推送源码或标签。
+
+2026-10-24：用户授权应用 Actions 并推送源码，随后要求调整仓库名称；仓库更名为 `MusicPlayer-for-Windows`，本地 origin 同步更改，upstream 保留。首次推送发现客户端是浅克隆，GitHub 拒收缺失历史对象的包；补全 upstream 历史后重试，不使用强制推送，不推送版本标签。
