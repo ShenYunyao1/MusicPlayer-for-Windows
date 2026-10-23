@@ -2,7 +2,10 @@ param(
     [string]$Python = 'python',
     [string]$MfcRoot = '',
     [string]$OutputDirectory = '',
-    [string]$ServerBinary = ''
+    [string]$ServerBinary = '',
+    [string]$ServerSource = '',
+    [string]$ExpectedServerVersion = '',
+    [int]$ExpectedServerSchema = 0
 )
 $ErrorActionPreference = 'Stop'
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -29,6 +32,8 @@ if ($testOutput -eq $buildRoot -or $testOutput.StartsWith($buildRoot+'\',[String
 }
 $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
+if ($ServerBinary) { $ServerBinary = (Resolve-Path -LiteralPath $ServerBinary).Path }
+if ($ServerSource) { $ServerSource = (Resolve-Path -LiteralPath $ServerSource).Path }
 $vcvars = Join-Path $build.installationPath 'VC\Auxiliary\Build\vcvars64.bat'
 $environment = & $env:ComSpec /d /c "`"$vcvars`" >nul && set"
 if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the compiler environment.' }
@@ -47,7 +52,11 @@ try {
     & $Python (Join-Path $PSScriptRoot 'remote_library_fixture.py') --exe $exe
     if ($LASTEXITCODE -ne 0) { throw 'Remote cache regression failed.' }
     if ($ServerBinary) {
-        & $Python (Join-Path $PSScriptRoot 'remote_server_integration.py') --exe $exe --server $ServerBinary
+        $integrationArguments = @('--exe', $exe, '--server', $ServerBinary)
+        if ($ServerSource) { $integrationArguments += @('--server-source', $ServerSource) }
+        if ($ExpectedServerVersion) { $integrationArguments += @('--expected-version', $ExpectedServerVersion) }
+        if ($ExpectedServerSchema) { $integrationArguments += @('--expected-schema', $ExpectedServerSchema) }
+        & $Python (Join-Path $PSScriptRoot 'remote_server_integration.py') @integrationArguments
         if ($LASTEXITCODE -ne 0) { throw 'Real server integration failed.' }
     }
 } finally { Pop-Location }

@@ -82,7 +82,9 @@ public static class ClientPackageResources {
         throw 'Executable build information is incomplete. Rebuild before packaging.'
     }
     $exeHash = Get-PackageSHA256 $files['MusicPlayer2.exe']
-    $info = "Platform: windows-x64`nBuilt: $($stampLines[0].Trim())`nGit: $($stampLines[1].Trim())`nMusicPlayer2.exe SHA-256: $exeHash`n"
+    $release = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'client-release.json') -Raw | ConvertFrom-Json
+    if ($release.version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid client release version' }
+    $info = "Release: $($release.version)`nPlatform: windows-x64`nBuilt: $($stampLines[0].Trim())`nGit: $($stampLines[1].Trim())`nMusicPlayer2.exe SHA-256: $exeHash`n"
 
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem

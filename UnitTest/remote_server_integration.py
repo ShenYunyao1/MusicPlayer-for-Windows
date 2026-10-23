@@ -57,7 +57,9 @@ class Account:
 def run(args):
     args.server, args.exe = args.server.resolve(), args.exe.resolve()
     parent = Path(__file__).resolve().parents[2]
-    terminal = parent / "server" / "tests" / "admin-terminal.py"
+    source = args.server_source.resolve() if args.server_source else parent / "server"
+    terminal = source / "tests" / "admin-terminal.py"
+    assert terminal.is_file(), "server source with tests/admin-terminal.py is required"
     with tempfile.TemporaryDirectory(prefix="mp2-server-v2-") as directory:
         directory = Path(directory)
         media = directory / "media"
@@ -81,14 +83,16 @@ def run(args):
             port = listener.getsockname()[1]
         base = f"http://127.0.0.1:{port}"
         environment = dict(os.environ)
-        environment["PATH"] = r"D:\Program\ffmpeg\bin" + os.pathsep + environment["PATH"]
         with (directory / "server.log").open("wb") as log:
             server = subprocess.Popen([str(args.server), "-addr", f"127.0.0.1:{port}", "-media-root", str(media),
                                        "-data", str(database)], stdout=log, stderr=log, env=environment,
                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 health = wait_for(lambda: json.load(urllib.request.urlopen(base + "/api/v2/health", timeout=2)))
-                assert health["version"] == "0.13.0", "integration requires the latest server contract"
+                if args.expected_version:
+                    assert health["version"] == args.expected_version, "unexpected test server version"
+                if args.expected_schema:
+                    assert health["schema"] == args.expected_schema, "unexpected test server schema"
                 admin = Account(base)
                 admin.login("admin", password)
                 tracks = wait_for(lambda: (lambda t: t if len(t) == 105 else None)(admin.call("tracks")))
@@ -220,4 +224,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", type=Path, required=True)
     parser.add_argument("--server", type=Path, required=True)
+    parser.add_argument("--server-source", type=Path)
+    parser.add_argument("--expected-version")
+    parser.add_argument("--expected-schema", type=int)
     run(parser.parse_args())

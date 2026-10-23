@@ -1,0 +1,161 @@
+name: Windows player tests and release
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: player-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  test:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: player
+    outputs:
+      commit: ${{ steps.metadata.outputs.commit }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: player
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate release identity and server baseline
+        id: metadata
+        run: python scripts/client-release.py --ref $env:GITHUB_REF --github-output $env:GITHUB_OUTPUT
+      - name: Checkout pinned test server
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.metadata.outputs.server_repository }}
+          ref: ${{ steps.metadata.outputs.server_commit }}
+          path: server-source
+          persist-credentials: false
+      - uses: microsoft/setup-msbuild@v2
+        with:
+          vs-version: '[17.0,18.0)'
+      - name: Verify VS 2022 MFC tools
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $install = & $vswhere -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.ATLMFC -property installationPath
+          if (!$install) { throw 'VS 2022 MFC component is required on the runner.' }
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: server-source/server/go.sum
+      - name: Install integration test dependencies
+        timeout-minutes: 5
+        run: |
+          python -m pip install --disable-pip-version-check pywinpty==2.0.15
+          if ($LASTEXITCODE -ne 0) { throw 'pywinpty installation failed' }
+          if (!(Get-Command ffprobe -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'ffmpeg installation failed' }
+          }
+          if (!(Get-Command ffprobe -ErrorAction SilentlyContinue)) { throw 'ffprobe is unavailable' }
+      - name: Build x64 Release
+        run: msbuild MusicPlayer2.sln /t:Build /p:Configuration=Release /p:Platform=x64 /p:CL_MPCount=4 /m:4 /nologo /fileLogger /fileLoggerParameters:LogFile=build/build-x64-release.log
+      - name: Build isolated real server
+        working-directory: server-source/server
+        run: go build -trimpath -buildvcs=true -o build/musicserver.exe ./cmd/musicserver
+        env:
+          CGO_ENABLED: '0'
+      - name: Build layout and release validation tests
+        run: |
+          python UnitTest/test-build-layout.py --msbuild (Get-Command msbuild).Source
+          if ($LASTEXITCODE -ne 0) { throw 'Build layout regression failed' }
+          python UnitTest/test-client-release.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release validation regression failed' }
+      - name: Native HTTP, TLS, protocol, cache and real server integration
+        run: |
+          ./UnitTest/run-remote-library-cache-tests.ps1 -Python python `
+            -ServerBinary '../server-source/server/build/musicserver.exe' `
+            -ServerSource '../server-source/server' `
+            -ExpectedServerVersion '${{ steps.metadata.outputs.server_version }}' `
+            -ExpectedServerSchema ${{ steps.metadata.outputs.server_schema }}
+      - name: Package allowlist and failure regressions
+        run: python UnitTest/test-package.py
+      - name: Create and verify fixed-name distribution
+        run: |
+          ./package.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
+          python scripts/client-release.py --ref $env:GITHUB_REF --package dist --build build
+          if ($LASTEXITCODE -ne 0) { throw 'Distribution verification failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MusicPlayer2-windows-x64
+          path: |
+            player/dist/MusicPlayer2.zip
+            player/dist/MusicPlayer2.zip.sha256
+            player/dist/client-release-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicPlayer2-x64-build-log
+          path: player/build/build-x64-release.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  build-x86:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: microsoft/setup-msbuild@v2
+        with:
+          vs-version: '[17.0,18.0)'
+      - name: Compile x86 compatibility configuration
+        run: msbuild MusicPlayer2.sln /t:Build /p:Configuration=Release /p:Platform=x86 /p:CL_MPCount=4 /m:4 /nologo /fileLogger /fileLoggerParameters:LogFile=build/build-x86-release.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MusicPlayer2-x86-build-log
+          path: build/build-x86-release.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    needs: [test, build-x86]
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: MusicPlayer2-windows-x64
+          path: dist
+      - name: Verify accepted artifact again
+        run: python3 scripts/client-release.py --ref "$GITHUB_REF" --commit "$ACCEPTED_COMMIT" --package dist --verify-manifest
+        env:
+          ACCEPTED_COMMIT: ${{ needs.test.outputs.commit }}
+      - name: Publish complete release
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/MusicPlayer2.zip dist/MusicPlayer2.zip.sha256 dist/client-release-manifest.json --verify-tag --draft --title "MusicPlayer2 $GITHUB_REF_NAME (Windows x64)" --notes-file Documents/client-release-notes.md
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+        env:
+          GH_TOKEN: ${{ github.token }}
