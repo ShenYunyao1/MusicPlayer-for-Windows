@@ -6,7 +6,7 @@
 
 源码推送 → 自动化验证 → 固定名称构建产物；推送匹配版本的 `vX.Y.Z` 标签 → 所有门禁通过 → 草稿上传完整资产 → 公开正式 Release。开发阶段本地针对性检查并提交，未经本次明确授权不推送、不创建远程仓库、不发布。
 
-当前客户端 `origin` 指向原作者 `zhongyang219/MusicPlayer2`，本地功能尚未同步至用户的独立仓库。首次推送前需要用户提供自己的目标仓库；原作者仓库应保留为 upstream，不向其推送。此阶段不修改远程地址。
+独立公开仓库已创建为 [ShenYunyao1/MusicPlayer2](https://github.com/ShenYunyao1/MusicPlayer2)，本地 `origin` 已指向该仓库；原作者 `zhongyang219/MusicPlayer2` 保留为 `upstream`，`remote.pushDefault` 为 `origin`。仓库创建阶段未推送任何代码，远程仍为空，尚未触发 Actions。
 
 本期正式分发沿用已验证的 Windows x64 白名单 ZIP。保留 x86 编译检查，x86 分发需另行完善其依赖与打包验收，不发布旧式零散 EXE/DLL 包。发行版本由 `client-release.json` 独立维护，从 0.1.0 开始；上游程序版本 2.78 和服务器协议适配标识分别保留，发行身份以 ZIP 中 BUILD-INFO 与清单为准。
 
@@ -30,9 +30,10 @@
 
 普通分支不公开 Release；PR 无写权限；测试失败不能发布；版本标签必须匹配本地清单；发布包与接受测试的同一构建一致；固定资产 `MusicPlayer2.zip`、`MusicPlayer2.zip.sha256`、`client-release-manifest.json` 不含个人配置、Key、数据库和测试数据。
 
-首次远程验收仍需后续明确推送授权及目标仓库。推送后关注 Actions 成功状态与正式 Release 资产，再勾选远程验收。
+首次远程验收仍需后续明确推送授权。推送后关注 Actions 成功状态与正式 Release 资产，再勾选远程验收。
 
-- [ ] 用户目标仓库已确定，首次推送及 Actions 全部通过。
+- [x] 独立公开仓库已创建，本地 origin／upstream 与默认推送目标已核对。
+- [ ] 首次推送及 Actions 全部通过。
 - [ ] 首次标签发行资产与提交号核对通过。
 
 ## 本地验收记录
@@ -42,3 +43,5 @@
 构建环境依据 [Windows 2022 运行器清单](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)，发布权限与作业依赖依据 [GitHub Actions 工作流语法](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)。运行时仍检查 VS 2022 MFC 是否存在，缺失时明确失败。
 
 未推送、未触发远程 Actions、未发布 Release，未连接或变更云服务器。交互桌面播放不属于本次工作流调整的本地验收范围。
+
+2026-10-24：用户授权创建新仓库后，通过已登录的 ShenYunyao1 账号创建公开空仓库，GitHub 返回 ADMIN 权限、isPrivate=false、isEmpty=true。本地原 origin 重命名为 upstream，新 origin 为用户仓库；默认推送目标为 origin。仅核对仓库信息与 Git 远程配置，没有推送源码或标签。
