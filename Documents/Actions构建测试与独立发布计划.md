@@ -36,7 +36,7 @@
 
 - [x] 独立公开仓库已创建，本地 origin／upstream 与默认推送目标已核对。
 - [x] 首次源码推送完成，master 已跟踪 origin/master，未推送版本标签。
-- [ ] 首次 Actions 全部通过。
+- [x] 首次 Actions 全部通过；Windows 编译、协议／缓存／集成、打包及 Ubuntu 产物复核均通过。
 - [ ] 首次标签发行资产与提交号核对通过。
 
 ## 本地验收记录
@@ -56,3 +56,5 @@
 2026-10-24：工作流已注册为 active，首次 push 运行 `39998738941` 已启动；为验证最新提交，显式触发 `39998912814` 并取消较早的重复运行。最新运行的 x64／x86 编译、布局、发布门禁、协议／TLS／缓存、真实服务器集成和白名单打包回归全部通过，最终打包步骤误判失败：package.ps1 输出 PACKAGE SUCCEEDED，但没有设置成功返回码，干净 PowerShell 会话的 LASTEXITCODE 为 null，调用方将其判为非零。已先添加干净调用方回归并复现同样失败，再补齐成功时 exit 0；修复后的远程整体验收仍待重新运行。
 
 2026-10-24：提交 b599a3fb 的自动 push 运行 `40000189910` 已成功，test、build-x86 均 success，release 按普通分支规则 skipped。下载构建产物进一步复核时发现默认配置在 Windows checkout 为 CRLF、本地为 LF；规范化换行后文本完全相同，但原始字节比较误判为个人配置，这也会阻断 Linux 发布校验。新增回归先复现该错误，再将默认文本校验调整为仅允许 CRLF/LF 差异，其他内容仍须严格相同；增加 Ubuntu verify-artifact 门禁，后续所有分支构建均检查 Windows 分发包在 Linux 上的校验结果。
+
+2026-10-24：提交 `4e86bac4f191bed520d489c0589d2b047c4b2614` 的自动 push 运行 [40001277626](https://github.com/ShenYunyao1/MusicPlayer-for-Windows/actions/runs/40001277626) 全部通过：test、build-x86、verify-artifact 均 success，release 按普通分支规则 skipped。已下载 MusicPlayer2-windows-x64 产物，独立核对 ZIP 白名单、默认配置、PE 架构、大小／SHA-256、发行清单及 EXE 内嵌提交号，均与该提交一致。没有推送版本标签，Release 列表为空，云端服务器未变更。本条验收记录单独本地提交，不为文档更新重复触发整套构建。
