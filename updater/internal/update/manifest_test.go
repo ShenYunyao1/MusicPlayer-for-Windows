@@ -181,3 +181,60 @@ func TestRecoveryRejectsEscapesAndBadBackup(t *testing.T) {
 		t.Fatal("accepted escaped journal")
 	}
 }
+
+func TestRestoreEveryPartialApply(t *testing.T) {
+	m, _, _, _, b := fixture(t)
+	files, _ := ReadPackage(b, m)
+	for count := 0; count < 4; count++ {
+		root := t.TempDir()
+		os.WriteFile(filepath.Join(root, "MusicPlayer2.exe"), []byte("old"), 0600)
+		tx, e := Prepare(root, m, files)
+		if e != nil {
+			t.Fatal(e)
+		}
+		tx.State = "applying"
+		tx.Save()
+		for i, op := range tx.Operations {
+			if i >= count {
+				break
+			}
+			if e = writeSync(filepath.Join(root, filepath.FromSlash(op.Path)), files[op.Path]); e != nil {
+				t.Fatal(e)
+			}
+		}
+		recovered, e := LoadTransaction(root)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = recovered.Rollback(); e != nil {
+			t.Fatal(e)
+		}
+		if body, _ := os.ReadFile(filepath.Join(root, "MusicPlayer2.exe")); string(body) != "old" {
+			t.Fatal("partial restore failed", count)
+		}
+		for _, p := range []string{"MusicPlayerUpdater.exe", "language/test.ini", "global_cfg.ini"} {
+			if _, e = os.Stat(filepath.Join(root, filepath.FromSlash(p))); !os.IsNotExist(e) {
+				t.Fatal("new file remained", count, p)
+			}
+		}
+	}
+}
+
+func TestInterruptedPreparationCleanup(t *testing.T) {
+	m, _, _, _, b := fixture(t)
+	files, _ := ReadPackage(b, m)
+	root := t.TempDir()
+	tx, e := Prepare(root, m, files)
+	if e != nil {
+		t.Fatal(e)
+	}
+	tx.State = "preparing"
+	tx.Save()
+	os.RemoveAll(filepath.Join(root, TransactionDir, "backup"))
+	if e = Cleanup(root); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = Prepare(root, m, files); e != nil {
+		t.Fatal("could not retry preparation", e)
+	}
+}

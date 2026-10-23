@@ -9,6 +9,7 @@ void CUpdateHelper::Launch(bool message)
 #ifndef _M_X64
     if (message) AfxMessageBox(L"自动更新仅支持 Windows x64。请从独立仓库下载 x64 完整包。", MB_ICONINFORMATION);
 #else
+    if (theApp.m_pMainWnd == nullptr || !IsWindow(theApp.m_pMainWnd->GetSafeHwnd())) return;
     const std::wstring executable = theApp.m_module_dir + L"MusicPlayerUpdater.exe";
     if (GetFileAttributesW(executable.c_str()) == INVALID_FILE_ATTRIBUTES)
     {

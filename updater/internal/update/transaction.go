@@ -108,7 +108,7 @@ func Prepare(root string, m Manifest, files map[string][]byte) (*Transaction, er
 	if b, e := os.ReadFile(filepath.Join(r, "PROGRAM-FILES.json")); e == nil {
 		_ = json.Unmarshal(b, &baseline)
 	}
-	t := &Transaction{Root: r, State: "prepared", Version: m.Version, Commit: m.Commit}
+	t := &Transaction{Root: r, State: "preparing", Version: m.Version, Commit: m.Commit}
 	for _, spec := range m.Files {
 		if spec.Path == "global_cfg.ini" {
 			continue
@@ -134,6 +134,9 @@ func Prepare(root string, m Manifest, files map[string][]byte) (*Transaction, er
 	if err = os.Mkdir(t.dir(), 0700); err != nil {
 		return nil, err
 	}
+	if err = t.Save(); err != nil {
+		return nil, err
+	}
 	for _, op := range t.Operations {
 		if err = writeSync(filepath.Join(t.dir(), "payload", filepath.FromSlash(op.Path)), files[op.Path]); err != nil {
 			return nil, err
@@ -151,6 +154,7 @@ func Prepare(root string, m Manifest, files map[string][]byte) (*Transaction, er
 			}
 		}
 	}
+	t.State = "prepared"
 	return t, t.Save()
 }
 func LoadTransaction(root string) (*Transaction, error) {
@@ -224,6 +228,9 @@ func (t *Transaction) Rollback() error {
 			if digest(b) != op.OldHash {
 				return errors.New("backup hash mismatch")
 			}
+			if current, e := os.ReadFile(p); e == nil && digest(current) == op.OldHash {
+				continue
+			}
 			if err = writeSync(p, b); err != nil {
 				return err
 			}
@@ -240,12 +247,37 @@ func (t *Transaction) Complete() error { t.State = "complete"; return t.Save() }
 func Cleanup(root string) error {
 	t, err := LoadTransaction(root)
 	if os.IsNotExist(err) {
-		return nil
+		// A crash between mkdir and the first journal rename cannot have touched
+		// any program file. Only discard an empty directory/partial journal.
+		r, e := safeRoot(root)
+		if e != nil {
+			return e
+		}
+		dir := filepath.Join(r, TransactionDir)
+		if e = noLinks(dir); e != nil {
+			return e
+		}
+		entries, e := os.ReadDir(dir)
+		if os.IsNotExist(e) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		for _, entry := range entries {
+			if entry.Name() != "journal.json.writing" {
+				return errors.New("暂存目录缺少事务记录，请保留该目录并手动检查")
+			}
+		}
+		if e = os.Remove(filepath.Join(dir, "journal.json.writing")); e != nil && !os.IsNotExist(e) {
+			return e
+		}
+		return os.Remove(dir)
 	}
 	if err != nil {
 		return err
 	}
-	if t.State != "complete" && t.State != "rolled_back" && t.State != "prepared" {
+	if t.State != "complete" && t.State != "rolled_back" && t.State != "prepared" && t.State != "preparing" {
 		return errors.New("上次更新未完成，请运行更新器恢复")
 	}
 	if err := noLinks(t.dir()); err != nil {

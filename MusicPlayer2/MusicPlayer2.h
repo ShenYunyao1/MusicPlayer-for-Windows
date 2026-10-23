@@ -86,6 +86,7 @@ public:
     void SaveSongData();		//将所有歌曲信息以序列化的方式保存到文件
 
     void CheckUpdate(bool message);
+    bool m_exit_for_update{ false };
     void CheckUpdateInThread(bool message); //在后台线程中检查更新
 
     void LoadGlobalConfig();

@@ -114,13 +114,15 @@ func Run(visible bool, work func(*Window) error) {
 }
 func (w *Window) refresh() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	setText.Call(w.text, uintptr(unsafe.Pointer(wide(w.content))))
-	send.Call(w.bar, 0x402, uintptr(w.percent), 0)
+	content, percent, show, labels := w.content, w.percent, w.show, append([]string(nil), w.labels...)
+	w.mu.Unlock()
+	// Window messages may synchronously re-enter wndProc; never hold the state lock.
+	setText.Call(w.text, uintptr(unsafe.Pointer(wide(content))))
+	send.Call(w.bar, 0x402, uintptr(percent), 0)
 	for i, h := range w.buttons {
 		label := ""
-		if i < len(w.labels) {
-			label = w.labels[i]
+		if i < len(labels) {
+			label = labels[i]
 		}
 		setText.Call(h, uintptr(unsafe.Pointer(wide(label))))
 		show := uintptr(0)
@@ -129,7 +131,7 @@ func (w *Window) refresh() {
 		}
 		user.NewProc("ShowWindow").Call(h, show)
 	}
-	if w.show {
+	if show {
 		user.NewProc("ShowWindow").Call(w.hwnd, 5)
 	}
 }
@@ -149,6 +151,9 @@ func (w *Window) Status(s string) {
 func (w *Window) WriteLog(s string) {
 	if w.LogPath == "" {
 		return
+	}
+	if info, e := os.Stat(w.LogPath); e == nil && info.Size() > 1<<20 {
+		_ = os.Truncate(w.LogPath, 0)
 	}
 	f, e := os.OpenFile(w.LogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if e == nil {

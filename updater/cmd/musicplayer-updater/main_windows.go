@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +23,14 @@ import (
 var currentVersion = "0.0.0"
 var currentCommit = ""
 var startupTimeout = 90 * time.Second
+var verificationKey ed25519.PublicKey = trust.PublicKey()
+
+type updateUI interface {
+	SetCancel(context.CancelFunc)
+	Status(string)
+	Progress(int64, int64, time.Duration)
+	Ask(string, []string) int
+}
 
 func main() {
 	install := flag.String("install", "", "installation directory")
@@ -127,7 +136,7 @@ func load(work string, withPackage bool) (update.Manifest, []byte, []byte, map[s
 	if e != nil {
 		return update.Manifest{}, nil, nil, nil, e
 	}
-	m, e := update.ParseManifest(raw, sig, trust.PublicKey())
+	m, e := update.ParseManifest(raw, sig, verificationKey)
 	if e != nil {
 		return m, nil, nil, nil, e
 	}
@@ -148,7 +157,7 @@ func load(work string, withPackage bool) (update.Manifest, []byte, []byte, map[s
 	files, e := update.ReadPackage(b, m)
 	return m, raw, sig, files, e
 }
-func check(ui *desktop.Window, install, stateDir string, parent uint32, parentCreated uint64, window uintptr, background bool) error {
+func check(ui updateUI, install, stateDir string, parent uint32, parentCreated uint64, window uintptr, background bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ui.SetCancel(cancel)
@@ -157,8 +166,13 @@ func check(ui *desktop.Window, install, stateDir string, parent uint32, parentCr
 		return nil
 	}
 	ui.Status("正在连接 GitHub 并验证发行清单…")
+	// Bound startup attempts as well as successful checks. Manual checks bypass this.
+	s.Checked = time.Now().Unix()
+	if err := update.SaveCheckState(stateDir, s); err != nil {
+		return err
+	}
 	h := update.NewHTTP()
-	m, raw, sig, source, err := h.Discover(ctx, trust.PublicKey(), &s, "https://api.github.com/repos/"+update.Repository+"/releases/latest")
+	m, raw, sig, source, err := h.Discover(ctx, verificationKey, &s, "https://api.github.com/repos/"+update.Repository+"/releases/latest")
 	if err != nil {
 		if background || ctx.Err() != nil {
 			return nil
@@ -225,6 +239,7 @@ func check(ui *desktop.Window, install, stateDir string, parent uint32, parentCr
 	}
 	// No cancellation after this point: the replacement process owns recovery.
 	ui.SetCancel(nil)
+	cleanupDownloads(stateDir)
 	work, err := os.MkdirTemp(stateDir, "transaction-")
 	if err != nil {
 		return err
@@ -249,7 +264,7 @@ func check(ui *desktop.Window, install, stateDir string, parent uint32, parentCr
 	cmd := exec.Command(staged, "--apply", "--install", install, "--work", work, "--state", stateDir, "--parent", fmt.Sprint(parent), "--parent-created", fmt.Sprint(parentCreated), "--window", fmt.Sprint(window))
 	return cmd.Start()
 }
-func applyInstall(ui *desktop.Window, install, work string, parent uint32, parentCreated uint64, window uintptr) error {
+func applyInstall(ui updateUI, install, work string, parent uint32, parentCreated uint64, window uintptr) error {
 	ui.SetCancel(nil)
 	ui.Status("正在验证安装事务…")
 	m, _, _, files, err := load(work, true)
@@ -310,7 +325,31 @@ func requiredSpace(m update.Manifest) int64 {
 	for _, f := range m.Files {
 		total += f.Size * 3
 	}
-	return total + 32<<20
+	return total + (32 << 20)
+}
+
+func cleanupDownloads(stateDir string) {
+	entries, _ := os.ReadDir(stateDir)
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "transaction-") {
+			continue
+		}
+		dir := filepath.Join(stateDir, entry.Name())
+		resolved, e := filepath.EvalSymlinks(dir)
+		abs, _ := filepath.Abs(dir)
+		if e != nil || !strings.EqualFold(abs, resolved) {
+			continue
+		}
+		info, e := entry.Info()
+		if e != nil || time.Since(info.ModTime()) < 24*time.Hour {
+			continue
+		}
+		// Remove only known updater files, never recursively delete an arbitrary folder.
+		for _, name := range []string{"client-release-manifest.json", "client-release-manifest.json.sig", "MusicPlayer2.zip", "MusicPlayerUpdater.exe"} {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+		_ = os.Remove(dir)
+	}
 }
 func launchAndConfirm(install string, m update.Manifest) error {
 	var nonce [32]byte
@@ -349,13 +388,19 @@ func launchAndConfirm(install string, m update.Manifest) error {
 		}
 	}
 }
-func recoverInstall(ui *desktop.Window, install string) error {
+func recoverInstall(ui updateUI, install string) error {
 	tx, err := update.LoadTransaction(install)
 	if err != nil {
 		return err
 	}
 	if tx.State == "complete" || tx.State == "rolled_back" {
 		ui.Ask("上次事务已结束，无需恢复。", []string{"关闭"})
+		return nil
+	}
+	if tx.State == "preparing" || tx.State == "prepared" {
+		if ui.Ask("上次更新在准备阶段中断，程序文件未被替换。是否清理暂存？", []string{"清理暂存", "取消"}) == 0 {
+			return update.Cleanup(install)
+		}
 		return nil
 	}
 	if ui.Ask("请先退出此目录的播放器。恢复将还原上一版程序，保留个人数据。", []string{"恢复上一版", "取消"}) != 0 {

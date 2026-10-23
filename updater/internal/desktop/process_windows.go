@@ -51,6 +51,13 @@ func (p *Process) Wait(timeout time.Duration) error {
 	if r != 0 {
 		return errors.New("播放器未完成退出，尚未替换任何文件")
 	}
+	var code uint32
+	if e := syscall.GetExitCodeProcess(p.handle, &code); e != nil {
+		return e
+	}
+	if code != 0 {
+		return errors.New("播放器异常退出，尚未替换任何文件，请重新启动检查后重试")
+	}
 	return nil
 }
 func RequestExit(p *Process, window uintptr) error {

@@ -242,14 +242,6 @@ BOOL CMusicPlayerApp::InitInstance()
             return FALSE;
     }
 
-    //启动时检查更新
-#ifndef _DEBUG		//DEBUG下不在启动时检查更新
-    if (m_general_setting_data.check_update_when_start)
-    {
-        AfxBeginThread(CheckUpdateThreadFunc, NULL);
-    }
-#endif // !_DEBUG
-
     //启动后台线程将歌曲数据分类
     //StartClassifySongData();
 
@@ -714,7 +706,8 @@ int CMusicPlayerApp::ExitInstance()
     // 释放ITaskbarList3
     ReleaseTaskBarRefs();
 
-    return CWinApp::ExitInstance();
+    const int result = CWinApp::ExitInstance();
+    return m_exit_for_update ? 0 : result;
 }
 
 

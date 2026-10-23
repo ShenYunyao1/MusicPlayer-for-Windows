@@ -1,4 +1,4 @@
-# Windows 播放器 Actions 构建、测试与独立发布
+﻿# Windows 播放器 Actions 构建、测试与独立发布
 
 日期：2026-10-24。适用于独立仓库 MusicPlayer2，服务器仓库继续独立维护。
 
@@ -60,3 +60,5 @@
 2026-10-24：提交 `4e86bac4f191bed520d489c0589d2b047c4b2614` 的自动 push 运行 [40001277626](https://github.com/ShenYunyao1/MusicPlayer-for-Windows/actions/runs/40001277626) 全部通过：test、build-x86、verify-artifact 均 success，release 按普通分支规则 skipped。已下载 MusicPlayer2-windows-x64 产物，独立核对 ZIP 白名单、默认配置、PE 架构、大小／SHA-256、发行清单及 EXE 内嵌提交号，均与该提交一致。没有推送版本标签，Release 列表为空，云端服务器未变更。本条验收记录单独本地提交，不为文档更新重复触发整套构建。
 
 2026-10-24：用户随后授权测试完成后在线发布。[参数化推送发布脚本](参数化推送发布脚本.md) 已完成隔离测试，并实际用于推送提交 `4f479f35f0005e84a4c016d06eff4614f59ca3fe` 和 v0.1.0 标签；标签运行 [40005476050](https://github.com/ShenYunyao1/MusicPlayer-for-Windows/actions/runs/40005476050) 的全部门禁与 release 均成功。[v0.1.0](https://github.com/ShenYunyao1/MusicPlayer-for-Windows/releases/tag/v0.1.0) 已公开为 latest，三个固定资产的大小／SHA-256、清单、ZIP 与 EXE 内嵌提交号均通过独立核对。服务器未部署或重启。
+
+0.2.0 自动更新扩展：原有手动发行流程保留，新增独立 Go 更新器、程序资源基线、签名清单协议和第四个 .sig 资产。Windows 门禁增加原生窗口／事务／启动失败回滚，Ubuntu 验证签名包；仅标签 release 作业读取客户端专用 CLIENT_UPDATE_SIGNING_KEY，普通构建使用 fixture key。完整验收以本次 Actions 为准，见 [播放器自动更新开发方案与进度](播放器自动更新开发方案与进度.md)。

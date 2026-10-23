@@ -2587,6 +2587,13 @@ void CMusicPlayerDlg::OnTimer(UINT_PTR nIDEvent)
             FirstRunCreateShortcut();
 
             SetAlwaysOnTop();
+#ifndef _DEBUG
+            // The updater needs the real main HWND for its normal-save exit request.
+            // Start only after window creation, never during InitInstance's pre-dialog phase.
+            if (theApp.m_general_setting_data.check_update_when_start &&
+                GetEnvironmentVariableW(L"MUSICPLAYER_UPDATE_NONCE", nullptr, 0) == 0)
+                theApp.CheckUpdateInThread(false);
+#endif
         }
 
         m_timer_count++;
@@ -5080,8 +5087,8 @@ LRESULT CMusicPlayerDlg::OnInstallClientUpdate(WPARAM wParam, LPARAM)
     if (wParam != 0x4D505550) return 0;
     // EndDialog performs the normal OnDestroy/InitInstance save sequence,
     // bypassing the ordinary close-to-tray preference.
-    CBaseDialog::CloseAllWindow();
-    EndDialog(IDCANCEL);
+    theApp.m_exit_for_update = true;
+    OnMenuExit();
     return 0;
 }
 
