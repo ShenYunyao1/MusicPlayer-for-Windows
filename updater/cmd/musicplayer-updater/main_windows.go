@@ -110,7 +110,10 @@ func main() {
 		ui.LogPath = filepath.Join(*stateDir, "latest-update.log")
 		defer func() { ui.WriteLog("更新器退出") }()
 		if *recoverMode {
-			if *parent != 0 {
+			tx, _ := update.LoadTransaction(*install)
+			// Preparation has not changed program files; it can be discarded
+			// without waiting for a running player's exit.
+			if *parent != 0 && (tx == nil || tx.State != "preparing" && tx.State != "prepared") {
 				p, e := desktop.OpenParent(uint32(*parent), *install)
 				if e == nil {
 					defer p.Close()

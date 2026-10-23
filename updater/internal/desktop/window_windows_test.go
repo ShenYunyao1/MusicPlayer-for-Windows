@@ -2,11 +2,20 @@ package desktop
 
 import (
 	"context"
+	"math"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestSpacePreflightFailsBeforeChanges(t *testing.T) {
+	err := Preflight(t.TempDir(), math.MaxInt64)
+	if err == nil || !strings.Contains(err.Error(), "空间不足") {
+		t.Fatal(err)
+	}
+}
 
 func TestWindowCanInitializeAndExitHidden(t *testing.T) {
 	if os.Getenv("MUSICPLAYER_WINDOW_TEST") == "1" {

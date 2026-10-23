@@ -64,6 +64,7 @@ func writeSync(p string, b []byte) error {
 	if err != nil {
 		return err
 	}
+	defer os.Remove(p + ".writing")
 	_, err = f.Write(b)
 	if err == nil {
 		err = f.Sync()
