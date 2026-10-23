@@ -40,6 +40,8 @@ jobs:
       - name: Validate release identity and server baseline
         id: metadata
         run: python scripts/client-release.py --ref $env:GITHUB_REF --github-output $env:GITHUB_OUTPUT
+      - name: Publishing script regressions without network access
+        run: python UnitTest/test-publish.py
       - name: Checkout pinned test server
         uses: actions/checkout@v4
         with:

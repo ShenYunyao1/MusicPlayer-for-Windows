@@ -6,6 +6,8 @@
 - 支持分页与增量刷新、按需下载、内容校验、离线缓存，以及授权撤回和无效订阅状态。
 - 修复 HTTPS 协议判断错误导致的连接测试 HTTP 400。
 - 独立 Actions 验证、构建与发布 Windows x64 白名单包，附提交号、SHA-256 和发行清单。
+- 新增参数化 publish.bat／publish.ps1：检查工作区与版本后推送源码或正式版本标签，跟踪 Actions，并核验 Release 资产；支持预览和仅触发模式。
+- Windows 产物经 Ubuntu 再次校验；修复打包成功返回码与默认配置换行差异导致的误判。
 
 下载 `MusicPlayer2.zip`，完整解压后启动其中的 `MusicPlayer2/MusicPlayer2.exe`。不要只复制 EXE；目标电脑需要 Microsoft Visual C++ x64 运行库。服务器地址填写根地址，API Key 由使用者自行配置。包内不包含个人账号、配置、歌单、缓存或测试数据。
 
