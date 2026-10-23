@@ -69,7 +69,10 @@ def verify_package(root, directory, config, commit, build=None):
                 require(content == (build / name).read_bytes(), "package differs from accepted build: " + name)
         executable_hash = hashlib.sha256(archive.read("MusicPlayer2/MusicPlayer2.exe")).hexdigest()
         require(fields.get("MusicPlayer2.exe SHA-256") == executable_hash, "executable checksum mismatch")
-        require(archive.read("MusicPlayer2/global_cfg.ini") == (root / "third_party/runtime/defaults/global_cfg.ini").read_bytes(),
+        # Git checkouts on Windows and Linux may use CRLF and LF respectively.
+        # Compare the exact default text while preserving all other content.
+        require(archive.read("MusicPlayer2/global_cfg.ini").replace(b"\r\n", b"\n")
+                == (root / "third_party/runtime/defaults/global_cfg.ini").read_bytes().replace(b"\r\n", b"\n"),
                 "package contains a personal portable profile")
     return {"version": config["version"], "commit": commit, "platform": "windows-x64",
             "server_baseline": {key.removeprefix("server_"): value for key, value in config.items() if key.startswith("server_")},

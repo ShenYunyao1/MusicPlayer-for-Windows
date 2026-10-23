@@ -30,7 +30,7 @@
 
 ## 完成标准
 
-普通分支不公开 Release；PR 无写权限；测试失败不能发布；版本标签必须匹配本地清单；发布包与接受测试的同一构建一致；固定资产 `MusicPlayer2.zip`、`MusicPlayer2.zip.sha256`、`client-release-manifest.json` 不含个人配置、Key、数据库和测试数据。
+普通分支不公开 Release；PR 无写权限；测试失败不能发布；版本标签必须匹配本地清单；发布包与接受测试的同一构建一致；固定资产 `MusicPlayer2.zip`、`MusicPlayer2.zip.sha256`、`client-release-manifest.json` 不含个人配置、Key、数据库和测试数据。Windows 上传的产物还须经 Ubuntu 作业重新验证，通过后才允许正式发布。
 
 首次远程验收仍需后续明确推送授权。推送后关注 Actions 成功状态与正式 Release 资产，再勾选远程验收。
 
@@ -54,3 +54,5 @@
 2026-10-24：提交 `0160e120e00b7aea5bcf78764db5390c76fb07e0` 已成功推送至 origin/master，GitHub 默认分支为 master，Actions 权限 enabled=true。远程已存在 `.github/workflows/windows-release.yml`，但首次导入后的工作流注册及运行列表暂为空；仍在核对首次 Actions，尚未标记远程测试通过或正式发行。
 
 2026-10-24：工作流已注册为 active，首次 push 运行 `39998738941` 已启动；为验证最新提交，显式触发 `39998912814` 并取消较早的重复运行。最新运行的 x64／x86 编译、布局、发布门禁、协议／TLS／缓存、真实服务器集成和白名单打包回归全部通过，最终打包步骤误判失败：package.ps1 输出 PACKAGE SUCCEEDED，但没有设置成功返回码，干净 PowerShell 会话的 LASTEXITCODE 为 null，调用方将其判为非零。已先添加干净调用方回归并复现同样失败，再补齐成功时 exit 0；修复后的远程整体验收仍待重新运行。
+
+2026-10-24：提交 b599a3fb 的自动 push 运行 `40000189910` 已成功，test、build-x86 均 success，release 按普通分支规则 skipped。下载构建产物进一步复核时发现默认配置在 Windows checkout 为 CRLF、本地为 LF；规范化换行后文本完全相同，但原始字节比较误判为个人配置，这也会阻断 Linux 发布校验。新增回归先复现该错误，再将默认文本校验调整为仅允许 CRLF/LF 差异，其他内容仍须严格相同；增加 Ubuntu verify-artifact 门禁，后续所有分支构建均检查 Windows 分发包在 Linux 上的校验结果。

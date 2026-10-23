@@ -136,6 +136,12 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "release mismatch"):
             self.verify()
 
+    def test_portable_profile_line_endings(self):
+        (self.root / "third_party/runtime/defaults/global_cfg.ini").write_bytes(b"[config]\r\nportable_mode=true\r\n")
+        self.entries["MusicPlayer2/global_cfg.ini"] = b"[config]\nportable_mode=true\n"
+        self.write_package()
+        self.verify()
+
 
 if __name__ == "__main__":
     unittest.main()
