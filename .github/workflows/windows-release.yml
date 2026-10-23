@@ -1,4 +1,5 @@
 name: Windows player tests and release
+run-name: '${{ github.event_name }} | ${{ github.ref_name }}'
 
 on:
   push:
