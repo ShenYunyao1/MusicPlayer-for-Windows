@@ -32,6 +32,18 @@ struct RemotePlaylist
     std::string id;
     std::wstring name;
     std::wstring description;
+    bool read_only{};
+    std::string subscription_status;
+    std::string subscription_reason;
+    std::wstring source_owner_name;
+    bool Available() const { return subscription_status.empty() || subscription_status == "active"; }
+    std::wstring UnavailableReason() const
+    {
+        if (subscription_reason == "private") return L"作者已设为私有";
+        if (subscription_reason == "owner_disabled") return L"作者账户已停用";
+        if (subscription_reason == "deleted") return L"源歌单已删除";
+        return L"订阅暂不可用";
+    }
     std::vector<std::string> track_ids;
     std::vector<RemoteTrack> tracks;
     std::map<std::string, std::wstring> track_notes;

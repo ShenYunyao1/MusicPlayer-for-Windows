@@ -115,6 +115,17 @@ namespace
         return Utf8ToWide(value[name].get<std::string>());
     }
 
+    void ParsePlaylistMetadata(const json& value, RemotePlaylist& playlist)
+    {
+        playlist.id = value.at("id").get<std::string>();
+        playlist.name = JsonString(value, "name");
+        playlist.description = JsonString(value, "description");
+        playlist.read_only = value.value("read_only", false);
+        playlist.subscription_status = value.value("subscription_status", "");
+        playlist.subscription_reason = value.value("subscription_reason", "");
+        playlist.source_owner_name = JsonString(value, "source_owner_name");
+    }
+
     RemoteTrack ParseTrack(const json& value)
     {
         RemoteTrack track;
@@ -191,10 +202,8 @@ bool CRemoteLibraryClient::GetPlaylists(std::vector<RemotePlaylist>& playlists, 
         for (const auto& value : values)
         {
             RemotePlaylist playlist;
-            playlist.id = value.value("id", "");
-            playlist.name = JsonString(value, "name");
-            playlist.description = JsonString(value, "description");
-            if (value.contains("track_ids") && value["track_ids"].is_array())
+            ParsePlaylistMetadata(value, playlist);
+            if (playlist.Available() && value.contains("track_ids") && value["track_ids"].is_array())
                 for (const auto& track_id : value["track_ids"])
                     if (track_id.is_string())
                         playlist.track_ids.push_back(track_id.get<std::string>());
@@ -222,9 +231,9 @@ bool CRemoteLibraryClient::GetPlaylist(const std::string& playlist_id, RemotePla
             error_message = L"服务器返回的歌单数据格式不正确";
             return false;
         }
-        playlist.id = value["playlist"].value("id", playlist_id);
-        playlist.name = JsonString(value["playlist"], "name");
-        playlist.description = JsonString(value["playlist"], "description");
+        playlist = RemotePlaylist{};
+        ParsePlaylistMetadata(value["playlist"], playlist);
+        if (!playlist.Available()) return true;
         playlist.track_notes.clear();
         if (value["playlist"].contains("track_notes") && value["playlist"]["track_notes"].is_object())
             for (auto note = value["playlist"]["track_notes"].begin(); note != value["playlist"]["track_notes"].end(); ++note)
@@ -384,9 +393,8 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
         for (const auto& value : snapshot["playlists"])
         {
             RemotePlaylist playlist;
-            playlist.id = value.at("id").get<std::string>();
-            playlist.name = JsonString(value, "name");
-            playlist.description = JsonString(value, "description");
+            ParsePlaylistMetadata(value, playlist);
+            if (!playlist.Available()) { result.push_back(std::move(playlist)); continue; }
             const auto unavailable = value.value("unavailable_track_ids", std::vector<std::string>{});
             for (const auto& identity : value.value("track_ids", json::array()))
             {
@@ -454,7 +462,12 @@ bool CRemoteLibraryClient::PlaylistAllowed(const std::string& id) const
         std::ifstream in(std::filesystem::path(m_cache_directory) / L"library.json");
         if (!in) return false;
         auto j = json::parse(in);
-        for (const auto& p : j.at("playlists")) if (p.at("id") == id) return true;
+        for (const auto& p : j.at("playlists"))
+            if (p.at("id") == id)
+            {
+                const auto status=p.value("subscription_status", "");
+                return status.empty() || status == "active";
+            }
     }
     catch (const std::exception&) {}
     return false;

@@ -160,6 +160,12 @@ std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::SaveOffline(const Remo
     auto task=std::make_shared<RemoteLibraryTask>();
     auto client=RemoteLibraryConfig::Load().Client(); client.SetCancellation(task->cancel);
     auto available=std::make_shared<RemotePlaylist>(playlist);
+    if (!playlist.Available())
+    {
+        task->status=L"无法离线保存："+playlist.UnavailableReason();
+        task->done.store(true,std::memory_order_release);
+        return task;
+    }
     available->tracks.erase(std::remove_if(available->tracks.begin(),available->tracks.end(),
         [](const RemoteTrack& t){return t.unavailable;}),available->tracks.end());
     SaveOfflineStep(task,client,available,0);
@@ -218,7 +224,7 @@ bool CRemoteLibraryManager::Materialize(const RemotePlaylist& playlist, const st
     try
     {
         auto client=RemoteLibraryConfig::Load().Client();
-        if (!client.PlaylistAllowed(playlist.id)) throw std::runtime_error("playlist no longer authorized; refresh required");
+        if (!playlist.Available() || !client.PlaylistAllowed(playlist.id)) throw std::runtime_error("playlist no longer authorized; refresh required");
         const std::string name_or_id = playlist.id.empty() ? "name:" + Utf8(playlist.name) : "id:" + playlist.id;
         const std::string identity = Utf8(client.CacheDirectory()) + "\n" + name_or_id;
         const std::wstring stable_path = (std::filesystem::path(theApp.m_playlist_dir) /

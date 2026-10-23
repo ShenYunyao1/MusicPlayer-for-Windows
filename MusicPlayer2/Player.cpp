@@ -1221,6 +1221,7 @@ void CPlayer::ValidateRemotePlaylistAccess()
 
 bool CPlayer::PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& error)
 {
+    if (!playlist.Available()) { error = L"无法播放："+playlist.UnavailableReason(); return false; }
     if (playlist.tracks.empty()) { error = L"歌单没有曲目。"; return false; }
     const std::wstring previous_playlist_path = m_playlist_path;
     // Save the old in-memory queue before writing the server snapshot. Otherwise

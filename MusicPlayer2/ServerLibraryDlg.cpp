@@ -48,6 +48,7 @@ BOOL CServerLibraryDlg::OnInitDialog()
 bool CServerLibraryDlg::HasPlaylist() const
 {
     if (m_selected_playlist<0 || m_selected_playlist>=static_cast<int>(m_playlists.size())) return false;
+    if (!m_playlists[m_selected_playlist].Available()) return false;
     const auto& tracks=m_playlists[m_selected_playlist].tracks;
     return std::any_of(tracks.begin(),tracks.end(),[](const RemoteTrack& t){return !t.unavailable;});
 }
@@ -98,7 +99,9 @@ void CServerLibraryDlg::RenderPlaylists()
     m_selected_playlist=-1;
     for (size_t i=0;i<m_playlists.size();++i)
     {
-        m_playlist_list.AddString(m_playlists[i].name.c_str());
+        const auto& playlist=m_playlists[i];
+        const auto label=playlist.Available() ? (playlist.read_only ? L"[订阅] "+playlist.name : playlist.name) : L"[失效] "+playlist.name;
+        m_playlist_list.AddString(label.c_str());
         if (m_playlists[i].id==m_state.playlist_id) m_selected_playlist=static_cast<int>(i);
     }
     if (m_selected_playlist<0 && !m_playlists.empty()) m_selected_playlist=0;
@@ -113,6 +116,11 @@ void CServerLibraryDlg::RenderTracks()
     SetDlgItemTextW(IDC_SERVER_NOTES,L"");
     if (m_selected_playlist<0 || m_selected_playlist>=static_cast<int>(m_playlists.size())) return;
     const auto& playlist=m_playlists[m_selected_playlist];
+    if (!playlist.Available())
+    {
+        SetDlgItemTextW(IDC_SERVER_NOTES,(playlist.UnavailableReason()+L"；重新公开或启用后在线刷新可恢复，亦可在网页取消订阅。").c_str());
+        return;
+    }
     SetDlgItemTextW(IDC_SERVER_NOTES,playlist.description.c_str());
     int row=0;
     for (const auto& track:playlist.tracks)
@@ -147,6 +155,7 @@ void CServerLibraryDlg::OnTrackChanged(NMHDR*, LRESULT* result)
     *result=0;
     if (m_rendering || m_selected_playlist<0 || m_selected_playlist>=static_cast<int>(m_playlists.size())) return;
     const auto& playlist=m_playlists[m_selected_playlist];
+    if (!playlist.Available()) return;
     int row=m_track_list.GetNextItem(-1,LVNI_SELECTED);
     auto note=playlist.description;
     if (row>=0 && row<static_cast<int>(playlist.tracks.size()))
@@ -211,6 +220,7 @@ void CServerLibraryDlg::OnTimer(UINT_PTR timer)
             auto& player = CPlayer::GetInstance();
             for (const auto& playlist : task->playlists)
             {
+                if (!playlist.Available()) continue;
                 const auto paths = library.MaterializedPaths(playlist);
                 if (paths.empty()) continue;
                 const auto current_path = player.GetPlaylistPath();
@@ -241,7 +251,7 @@ void CServerLibraryDlg::OnTimer(UINT_PTR timer)
         if (task->success)
         {
             SaveState(); m_playlists=task->playlists; RenderPlaylists();
-            if (m_playlists.empty()) task->status+=L"当前 Key 没有可见歌单，请在管理网页为 Key 授权本人歌单或系统 library。";
+            if (m_playlists.empty()) task->status+=L"当前 Key 没有可见歌单，请在网页授权本人歌单、有效订阅或全局曲库。";
         }
         SetDlgItemTextW(IDC_SERVER_STATUS,(refresh_error.empty() ? task->status : refresh_error).c_str());
         // First run has no offline snapshot: obtain the library from the server.

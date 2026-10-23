@@ -35,6 +35,7 @@ u.GetDlgItem.restype = w.HWND
 u.SetWindowTextW.argtypes = [w.HWND, w.LPCWSTR]
 u.SetWindowTextW.restype = w.BOOL
 u.IsWindowVisible.argtypes = [w.HWND]
+u.IsWindowEnabled.argtypes = [w.HWND]
 u.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
 u.SendMessageTimeoutW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM, w.UINT, w.UINT, c.POINTER(c.c_size_t)]
 u.SendMessageTimeoutW.restype = w.LPARAM
@@ -124,6 +125,7 @@ class Fixture(ThreadingHTTPServer):
         self.auth_status = 0
         self.empty_grants = False
         self.unavailable = set()
+        self.subscription_invalid = False
 
     def snapshot(self):
         tracks = [{"id": n, "title": "测试曲目" + n, "artist": "测试作者",
@@ -142,6 +144,10 @@ class Fixture(ThreadingHTTPServer):
         for playlist in result["playlists"]:
             playlist["unavailable_track_ids"] = [n for n in playlist["track_ids"] if n in self.unavailable]
             playlist["track_notes"] = {n: "保留备注" for n in playlist["track_ids"] if n in self.unavailable}
+        result["playlists"][0].update(read_only=True, subscription_status="active")
+        if self.subscription_invalid:
+            result["playlists"][0].update(subscription_status="invalid", subscription_reason="private",
+                                           track_ids=[], track_notes={}, unavailable_track_ids=[])
         if self.empty_grants:
             result.update(changed_tracks=[], playlists=[])
         return result
@@ -521,6 +527,30 @@ def run(args):
             time.sleep(1)
             assert fixture.media()[before:] == failed, "all failures must stop even in looping modes"
         print("PASS all-failed bounded stop in all six playback modes", flush=True)
+
+        desktop.select_playlist(0)
+        desktop.click(8110)
+        until(lambda: "测试曲目1" in desktop.title(), "active subscription playback")
+        fixture.subscription_invalid = True
+        desktop.click(8108)
+        until(lambda: any("作者已设为私有" in name for _, name, ident in desktop.windows() if ident == 8112),
+              "invalid subscription reason")
+        assert desktop.send(desktop.control(8106), 395) == 4, "invalid subscription should remain visible"
+        assert desktop.send(desktop.control(8107), 4100) == 0, "invalid subscription leaked members"
+        until(lambda: desktop.send(desktop.control(1015), 4100) == 0, "invalid subscription stops current queue")
+        assert not u.IsWindowEnabled(desktop.control(8110)), "invalid subscription enabled playback"
+        assert not u.IsWindowEnabled(desktop.control(8109)), "invalid subscription enabled offline save"
+        assert main_manifests[0].exists(), "suspension must preserve materialized identity for recovery"
+        desktop.select_playlist(1)
+        assert u.IsWindowEnabled(desktop.control(8110)), "unrelated grant became disabled"
+        fixture.subscription_invalid = False
+        desktop.select_playlist(0)
+        desktop.click(8108)
+        until(lambda: desktop.send(desktop.control(8107), 4100) == 4, "restored subscription members")
+        assert u.IsWindowEnabled(desktop.control(8110)) and u.IsWindowEnabled(desktop.control(8109))
+        desktop.click(8110)
+        until(lambda: "测试曲目1" in desktop.title(), "same subscription resumes after republish")
+        print("PASS invalid subscription remains visible with reason, stops queue/disables playback and offline save; independent grant and same-key recovery", flush=True)
 
         fixture.auth_status = 401
         desktop.click(8108)

@@ -88,7 +88,7 @@ def run(args):
                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 health = wait_for(lambda: json.load(urllib.request.urlopen(base + "/api/v2/health", timeout=2)))
-                assert health["version"] == "0.10.0", "integration requires the latest server contract"
+                assert health["version"] == "0.12.0", "integration requires the latest server contract"
                 admin = Account(base)
                 admin.login("admin", password)
                 tracks = wait_for(lambda: (lambda t: t if len(t) == 105 else None)(admin.call("tracks")))
@@ -119,7 +119,7 @@ def run(args):
                 assert synced["success"] and not synced["offline"] and len(synced["playlists"]) == 2, synced
                 library = next(p for p in synced["playlists"] if p["id"] == "library")
                 assert len(library["tracks"]) == 105, "native client lost a real snapshot page"
-                print("PASS real 0.10.0 server: account first password, account key and 100-item cursor pagination", flush=True)
+                print("PASS real server: account first password, account key and 100-item cursor pagination", flush=True)
                 # Narrow grants so media validation only downloads the selected private list.
                 user.call("auth/keys/" + key["id"], "PATCH", {"allowed_playlist_ids": [playlist_id]})
                 cached = native(download=True)
@@ -153,6 +153,37 @@ def run(args):
                 user.call("auth/keys/" + key["id"], "PATCH", {"allowed_playlist_ids": [playlist_id]})
                 assert native()["success"]
                 print("PASS real disable/re-enable same key, durable denial and zero-grant reset", flush=True)
+                # A subscription is a read-only reference, not a copy or a new grant.
+                source_id = str(uuid.uuid4())
+                source = admin.call("playlists", "POST", {"id": source_id, "name": "Published source", "track_ids": ids,
+                                                          "track_notes": {ids[0]: "author-only cue"}})
+                source = admin.call("playlists/" + source_id + "/visibility", "PUT", {"visibility": "public"}, source["version"])
+                user.call("subscriptions/" + source_id, "PUT")
+                subscribed = user.call("subscriptions")[0]
+                user.call("subscriptions/" + source_id + "/tracks/" + ids[0], "PATCH", {"note": "subscriber cue"}, subscribed["subscription_version"])
+                user.call("auth/keys/" + key["id"], "PATCH", {"allowed_playlist_ids": [source_id]})
+                active = native(download=True)["playlists"][0]
+                assert active["read_only"] and active["subscription_status"] == "active" and active["allowed"], active
+                assert active["notes"] == {ids[0]: "subscriber cue"} and all(t["cached"] for t in active["tracks"]), active
+                source = admin.call("playlists/" + source_id + "/visibility", "PUT", {"visibility": "private"}, source["version"])
+                invalid = native(download=True)["playlists"][0]
+                assert invalid["subscription_status"] == "invalid" and invalid["subscription_reason"] == "private" and not invalid["allowed"], invalid
+                assert invalid["tracks"] == [] and invalid["notes"] == {} and invalid["track_ids"] == [], invalid
+                assert not native(local=True)["playlists"][0]["allowed"], "offline invalid subscription became playable"
+                # Unrelated authorization continues to work despite the suspended source.
+                user.call("auth/keys/" + key["id"], "PATCH", {"allowed_playlist_ids": [source_id, playlist_id]})
+                mixed = native(download=True)["playlists"]
+                assert next(p for p in mixed if p["id"] == playlist_id)["tracks"][0]["cached"]
+                assert not next(p for p in mixed if p["id"] == source_id)["allowed"]
+                source = admin.call("playlists/" + source_id + "/visibility", "PUT", {"visibility": "public"}, source["version"])
+                restored = next(p for p in native()["playlists"] if p["id"] == source_id)
+                assert restored["allowed"] and restored["subscription_status"] == "active" and restored["notes"][ids[0]] == "subscriber cue", restored
+                admin.call("playlists/" + source_id, "DELETE", version=source["version"])
+                deleted = next(p for p in native()["playlists"] if p["id"] == source_id)
+                assert not deleted["allowed"] and deleted["subscription_reason"] == "deleted" and not deleted["tracks"], deleted
+                user.call("subscriptions/" + source_id, "DELETE")
+                assert all(p["id"] != source_id for p in native()["playlists"])
+                print("PASS real subscriptions: personal notes, same-key suspend/restore, durable invalid state, independent grants, deletion and unsubscribe", flush=True)
                 server.terminate()
                 server.wait(10)
                 offline = native(download=True)
