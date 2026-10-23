@@ -35,7 +35,8 @@
 首次远程验收仍需后续明确推送授权。推送后关注 Actions 成功状态与正式 Release 资产，再勾选远程验收。
 
 - [x] 独立公开仓库已创建，本地 origin／upstream 与默认推送目标已核对。
-- [ ] 首次推送及 Actions 全部通过。
+- [x] 首次源码推送完成，master 已跟踪 origin/master，未推送版本标签。
+- [ ] 首次 Actions 全部通过。
 - [ ] 首次标签发行资产与提交号核对通过。
 
 ## 本地验收记录
@@ -49,3 +50,5 @@
 2026-10-24：用户授权创建新仓库后，通过已登录的 ShenYunyao1 账号创建公开空仓库，GitHub 返回 ADMIN 权限、isPrivate=false、isEmpty=true。本地原 origin 重命名为 upstream，新 origin 为用户仓库；默认推送目标为 origin。仅核对仓库信息与 Git 远程配置，没有推送源码或标签。
 
 2026-10-24：用户授权应用 Actions 并推送源码，随后要求调整仓库名称；仓库更名为 `MusicPlayer-for-Windows`，本地 origin 同步更改，upstream 保留。首次推送发现客户端是浅克隆，GitHub 拒收缺失历史对象的包；补全 upstream 历史后重试，不使用强制推送，不推送版本标签。
+
+2026-10-24：提交 `0160e120e00b7aea5bcf78764db5390c76fb07e0` 已成功推送至 origin/master，GitHub 默认分支为 master，Actions 权限 enabled=true。远程已存在 `.github/workflows/windows-release.yml`，但首次导入后的工作流注册及运行列表暂为空；仍在核对首次 Actions，尚未标记远程测试通过或正式发行。
