@@ -627,8 +627,11 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
     }
     URL_COMPONENTS components{};
     components.dwStructSize = sizeof(components);
+    wchar_t scheme[16]{};
     wchar_t host[256]{};
     wchar_t urlPath[2048]{};
+    components.lpszScheme = scheme;
+    components.dwSchemeLength = static_cast<DWORD>(std::size(scheme));
     components.lpszHostName = host;
     components.dwHostNameLength = static_cast<DWORD>(std::size(host));
     components.lpszUrlPath = urlPath;
@@ -638,7 +641,7 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
         error_message = WinHttpError(L"解析服务器地址", GetLastError());
         return false;
     }
-    const bool secure = components.nScheme == INTERNET_SCHEME_HTTPS;
+    const bool secure = _wcsicmp(scheme, L"https") == 0;
     if (m_api_key.find_first_of("\r\n") != std::string::npos) { error_message = L"API Key 含有非法换行"; return false; }
     HINTERNET session = WinHttpOpen(L"MusicPlayer2 Remote Library/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (session == nullptr)

@@ -42,6 +42,8 @@ Push-Location $OutputDirectory
 try {
     & cl.exe /nologo /std:c++17 /EHsc /MD /utf-8 /D_AFXDLL /D_UNICODE /DUNICODE "/I$MfcRoot\include" "/I$project" (Join-Path $PSScriptRoot 'remote_library_cache.cpp') (Join-Path $project 'RemoteLibraryClient.cpp') "/Fe:$exe" /link "/LIBPATH:$MfcRoot\lib\x64" "/LIBPATH:$project"
     if ($LASTEXITCODE -ne 0) { throw 'Remote cache test build failed.' }
+    & $Python (Join-Path $PSScriptRoot 'remote_library_tls.py') --exe $exe
+    if ($LASTEXITCODE -ne 0) { throw 'Remote HTTP/TLS regression failed.' }
     & $Python (Join-Path $PSScriptRoot 'remote_library_fixture.py') --exe $exe
     if ($LASTEXITCODE -ne 0) { throw 'Remote cache regression failed.' }
     if ($ServerBinary) {

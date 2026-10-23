@@ -49,7 +49,7 @@ namespace
 
 int wmain(int argc, wchar_t** argv)
 {
-    if (argc==2 && std::wstring(argv[1])==L"--server")
+    if (argc==2 && (std::wstring(argv[1])==L"--server" || std::wstring(argv[1])==L"--check"))
     {
         using json=nlohmann::json;
         try
@@ -59,6 +59,13 @@ int wmain(int argc, wchar_t** argv)
             CRemoteLibraryClient client;
             client.Configure(std::wstring(url.begin(),url.end()),request.at("key").get<std::string>(),
                 std::filesystem::u8path(request.at("cache").get<std::string>()).wstring());
+            if (std::wstring(argv[1])==L"--check")
+            {
+                std::wstring error;
+                const bool success=client.CheckConnection(error);
+                std::cout << json({{"success",success},{"error",Utf8(error)}}).dump() << '\n';
+                return 0;
+            }
             std::vector<RemotePlaylist> playlists;
             std::wstring error; bool offline=false;
             const bool ok=client.SyncLibrary(playlists,offline,error,request.value("local_only",false));
