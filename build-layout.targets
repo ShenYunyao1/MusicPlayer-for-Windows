@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="GenerateClientReleaseVersion" BeforeTargets="ClCompile;ResourceCompile" Condition="'$(MSBuildProjectName)'=='MusicPlayer2'">
+    <Exec Command="python &quot;$(ClientRepositoryRoot)scripts\client-version.py&quot; --output &quot;$(ClientBuildRoot)generated\ClientVersion.h&quot;" />
+  </Target>
+  <Target Name="BuildClientUpdater" AfterTargets="Build" Condition="'$(MSBuildProjectName)'=='MusicPlayer2' and '$(Platform)'=='x64' and '$(Configuration)'=='Release'">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ClientRepositoryRoot)scripts\build-updater.ps1&quot;" />
+  </Target>
   <Target Name="CopyClientRuntimeInputs" AfterTargets="Build">
     <ItemGroup>
       <ClientRuntimeFile Include="$(ClientRuntimeInputs)common\**\*" />

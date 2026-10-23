@@ -1,110 +1,77 @@
 ﻿#include "stdafx.h"
 #include "UpdateHelper.h"
-#include "SimpleXML.h"
-#include "InternetCommon.h"
+#include "MusicPlayer2.h"
+#include <fstream>
+#include <filesystem>
 
-
-CUpdateHelper::CUpdateHelper()
+void CUpdateHelper::Launch(bool message)
 {
-}
-
-
-CUpdateHelper::~CUpdateHelper()
-{
-}
-
-void CUpdateHelper::SetUpdateSource(UpdateSource update_source)
-{
-    m_update_source = update_source;
-}
-
-bool CUpdateHelper::CheckForUpdate()
-{
-    wstring version_info;
-    //使用GitHub更新源
-    if (m_update_source == UpdateSource::GitHubSource)
+#ifndef _M_X64
+    if (message) AfxMessageBox(L"自动更新仅支持 Windows x64。请从独立仓库下载 x64 完整包。", MB_ICONINFORMATION);
+#else
+    const std::wstring executable = theApp.m_module_dir + L"MusicPlayerUpdater.exe";
+    if (GetFileAttributesW(executable.c_str()) == INVALID_FILE_ATTRIBUTES)
     {
-        if (CInternetCommon::GetURL(L"https://raw.githubusercontent.com/zhongyang219/MusicPlayer2/master/version.info", version_info))		//获取版本信息
-        {
-            m_row_data = true;
-        }
-        else if (CInternetCommon::GetURL(L"https://github.com/zhongyang219/MusicPlayer2/blob/master/version.info", version_info))		//获取版本信息
-        {
-            m_row_data = false;
-        }
-        else
-        {
-            return false;
-        }
-
-        if (!m_row_data)
-        {
-            size_t index = version_info.find(L"﻿&lt;version&gt;");
-            if (index != std::wstring::npos)
-                version_info = version_info.substr(index);
-
-            CString str_version_info = version_info.c_str();
-            str_version_info.Replace(L"&lt;", L"<");
-            str_version_info.Replace(L"&gt;", L">");
-
-            version_info = str_version_info;
-        }
+        if (message) AfxMessageBox(L"缺少 MusicPlayerUpdater.exe，请下载并完整解压官方发行包。", MB_ICONWARNING);
+        return;
     }
-    //使用Gitee更新源
-    else
+    std::wstring root = theApp.m_module_dir;
+    while (!root.empty() && (root.back() == L'\\' || root.back() == L'/')) root.pop_back();
+    std::wstring state = theApp.m_config_dir + L"updates";
+    FILETIME created{}, exited{}, kernel{}, user{};
+    GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
+    const auto creation = (static_cast<ULONGLONG>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
+    std::wstring command = L"\"" + executable + L"\" --install \"" + root + L"\" --state \"" + state
+        + L"\" --parent " + std::to_wstring(GetCurrentProcessId()) + L" --parent-created " + std::to_wstring(creation) + L" --window "
+        + std::to_wstring(reinterpret_cast<UINT_PTR>(theApp.GetMainWnd()->GetSafeHwnd()));
+    if (!message) command += L" --background";
+    STARTUPINFOW startup{ sizeof(startup) };
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(executable.c_str(), &command[0], nullptr, nullptr, FALSE, 0, nullptr,
+        root.c_str(), &startup, &process))
     {
-        if (!CInternetCommon::GetURL(L"https://gitee.com/zhongyang219/MusicPlayer2/raw/master/version.info", version_info))     //获取版本信息
-            return false;
+        if (message) AfxMessageBox(L"无法启动更新器，请检查文件或使用完整发行包。", MB_ICONWARNING);
+        return;
     }
+    CloseHandle(process.hThread);
+    WaitForSingleObject(process.hProcess, INFINITE);
+    CloseHandle(process.hProcess);
+#endif
+}
 
-    ParseUpdateInfo(version_info);
+void CUpdateHelper::NotifyReady()
+{
+    wchar_t token[65]{};
+    if (GetEnvironmentVariableW(L"MUSICPLAYER_UPDATE_NONCE", token, 65) != 64) return;
+    for (const auto c : std::wstring(token))
+        if (!((c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'))) return;
+    const std::wstring path = theApp.m_module_dir + L".musicplayer-update\\ready.txt";
+    std::ofstream output(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+    if (!output) return;
+    const std::wstring wideToken(token);
+    output << std::string(wideToken.begin(), wideToken.end()) << "\n" << CLIENT_VERSION_A << "\n" << CLIENT_COMMIT << "\n";
+    output.close();
+    if (output.good()) SetEnvironmentVariableW(L"MUSICPLAYER_UPDATE_NONCE", nullptr);
+}
 
+bool CUpdateHelper::RecoverInterrupted()
+{
+    if (GetEnvironmentVariableW(L"MUSICPLAYER_UPDATE_NONCE", nullptr, 0) > 0) return false;
+    std::ifstream input(std::filesystem::path(theApp.m_module_dir + L".musicplayer-update\\journal.json"));
+    if (!input) return false;
+    const std::string journal((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    bool pending = false;
+    for (const auto* state : { "applying", "awaiting_start", "rolling_back" })
+        if (journal.find(std::string("\"state\": \"") + state + "\"") != std::string::npos) pending = true;
+    if (!pending) return false;
+    const auto executable = theApp.m_module_dir + L"MusicPlayerUpdater.exe";
+    std::wstring root = theApp.m_module_dir;
+    while (!root.empty() && root.back() == L'\\') root.pop_back();
+    std::wstring command = L"\"" + executable + L"\" --recover --install \"" + root
+        + L"\" --parent " + std::to_wstring(GetCurrentProcessId());
+    STARTUPINFOW startup{ sizeof(startup) }; PROCESS_INFORMATION process{};
+    if (CreateProcessW(executable.c_str(), &command[0], nullptr, nullptr, FALSE, 0, nullptr, root.c_str(), &startup, &process))
+    { CloseHandle(process.hThread); CloseHandle(process.hProcess); }
+    else AfxMessageBox(L"上次更新未完成，请运行独立更新器 --recover 或完整解压官方发行包恢复。", MB_ICONWARNING);
     return true;
-}
-
-void CUpdateHelper::ParseUpdateInfo(wstring version_info)
-{
-    CSimpleXML version_xml;
-    version_xml.LoadXMLContentDirect(version_info);
-
-    m_version = version_xml.GetNode(L"version");
-    wstring str_source_tag = (m_update_source == UpdateSource::GitHubSource ? L"GitHub" : L"Gitee");
-    m_link64 = version_xml.GetNode(L"link_x64", str_source_tag.c_str());
-    m_link = version_xml.GetNode(L"link", str_source_tag.c_str());
-    CString contents_zh_cn = version_xml.GetNode(L"contents_zh_cn", L"update_contents").c_str();
-    CString contents_en = version_xml.GetNode(L"contents_en", L"update_contents").c_str();
-    contents_zh_cn.Replace(L"\\n", L"\r\n");
-    contents_en.Replace(L"\\n", L"\r\n");
-    m_contents_zh_cn = contents_zh_cn;
-    m_contents_en = contents_en;
-}
-
-const std::wstring& CUpdateHelper::GetVersion() const
-{
-    return m_version;
-}
-
-const std::wstring& CUpdateHelper::GetLink() const
-{
-    return m_link;
-}
-
-const std::wstring& CUpdateHelper::GetLink64() const
-{
-    return m_link64;
-}
-
-const std::wstring& CUpdateHelper::GetContentsEn() const
-{
-    return m_contents_en;
-}
-
-const std::wstring& CUpdateHelper::GetContentsZhCn() const
-{
-    return m_contents_zh_cn;
-}
-
-bool CUpdateHelper::IsRowData()
-{
-    return m_row_data;
 }

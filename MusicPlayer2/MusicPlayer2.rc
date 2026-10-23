@@ -1,6 +1,7 @@
 // Microsoft Visual C++ generated resource script.
 //
 #include "resource.h"
+#include "../build/generated/ClientVersion.h"
 
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
@@ -3215,8 +3216,8 @@ IDI_DELETE_D            ICON                    "res\\delete_d.ico"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,7,8,0
- PRODUCTVERSION 2,7,8,0
+ FILEVERSION CLIENT_FILE_VERSION
+ PRODUCTVERSION CLIENT_FILE_VERSION
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -3233,12 +3234,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "By ZhongYang"
             VALUE "FileDescription", "MusicPlayer2"
-            VALUE "FileVersion", "2.7.8.0"
+            VALUE "FileVersion", CLIENT_FILE_VERSION_TEXT
             VALUE "InternalName", "MusicPlayer2.exe"
             VALUE "LegalCopyright", "By ZhongYang. All rights reserved."
             VALUE "OriginalFilename", "MusicPlayer2.exe"
             VALUE "ProductName", "MusicPlayer2"
-            VALUE "ProductVersion", "2.7.8.0"
+            VALUE "ProductVersion", CLIENT_FILE_VERSION_TEXT
         END
     END
     BLOCK "VarFileInfo"

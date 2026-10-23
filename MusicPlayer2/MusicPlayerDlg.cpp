@@ -5,6 +5,7 @@
 #include "stdafx.h"
 #include "MusicPlayer2.h"
 #include "MusicPlayerDlg.h"
+#include "UpdateHelper.h"
 #include "SupportedFormatDlg.h"
 #include "AboutDlg.h"
 #include "CTest.h"
@@ -358,6 +359,7 @@ BEGIN_MESSAGE_MAP(CMusicPlayerDlg, CMainDialogBase)
     ON_COMMAND(ID_MORE_RECENT_ITEMS, &CMusicPlayerDlg::OnMoreRecentItems)
     ON_WM_NCCALCSIZE()
     ON_MESSAGE(WM_CLEAR_UI_SERCH_BOX, &CMusicPlayerDlg::OnClearUiSerchBox)
+    ON_MESSAGE(WM_APP + 214, &CMusicPlayerDlg::OnInstallClientUpdate)
     ON_WM_NCACTIVATE()
 END_MESSAGE_MAP()
 
@@ -2696,6 +2698,8 @@ void CMusicPlayerDlg::OnTimer(UINT_PTR nIDEvent)
     //响应1秒定时器
     else if (nIDEvent == TIMER_1_SEC)
     {
+        if (m_timer_count > 0 && !CPlayer::GetInstance().m_loading)
+            CUpdateHelper::NotifyReady();
         m_one_sec_timer_counter++;
         if (CPlayer::GetInstance().IsPlaying())
         {
@@ -5069,6 +5073,16 @@ void CMusicPlayerDlg::OnClose()
     // TODO: 在此添加消息处理程序代码和/或调用默认值
 
     CMainDialogBase::OnClose();
+}
+
+LRESULT CMusicPlayerDlg::OnInstallClientUpdate(WPARAM wParam, LPARAM)
+{
+    if (wParam != 0x4D505550) return 0;
+    // EndDialog performs the normal OnDestroy/InitInstance save sequence,
+    // bypassing the ordinary close-to-tray preference.
+    CBaseDialog::CloseAllWindow();
+    EndDialog(IDCANCEL);
+    return 0;
 }
 
 

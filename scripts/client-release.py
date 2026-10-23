@@ -6,10 +6,12 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import shutil
+import tempfile
 import zipfile
 
 
-CORE = ("MusicPlayer2.exe", "bass.dll", "bass_fx.dll", "tag.dll", "SciLexer.dll")
+CORE = ("MusicPlayer2.exe", "MusicPlayerUpdater.exe", "bass.dll", "bass_fx.dll", "tag.dll", "SciLexer.dll")
 SEMVER = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 
 
@@ -35,7 +37,7 @@ def load_config(root, ref=""):
 
 
 def expected_entries(root):
-    names = {"MusicPlayer2/" + name for name in (*CORE, "global_cfg.ini", "LICENSE", "README.txt", "BUILD-INFO.txt")}
+    names = {"MusicPlayer2/" + name for name in (*CORE, "global_cfg.ini", "LICENSE", "README.txt", "BUILD-INFO.txt", "PROGRAM-FILES.json")}
     for source, target in (("MusicPlayer2/language", "language"), ("MusicPlayer2/skins", "skins"),
                            ("third_party/runtime/common/Encoder", "Encoder")):
         folder = root / source
@@ -74,10 +76,35 @@ def verify_package(root, directory, config, commit, build=None):
         require(archive.read("MusicPlayer2/global_cfg.ini").replace(b"\r\n", b"\n")
                 == (root / "third_party/runtime/defaults/global_cfg.ini").read_bytes().replace(b"\r\n", b"\n"),
                 "package contains a personal portable profile")
-    return {"version": config["version"], "commit": commit, "platform": "windows-x64",
+        inventory = json.loads(archive.read("MusicPlayer2/PROGRAM-FILES.json"))
+        expected_inventory = {name.removeprefix("MusicPlayer2/"): hashlib.sha256(archive.read(name)).hexdigest()
+                              for name in sorted(names) if name.startswith(("MusicPlayer2/skins/", "MusicPlayer2/language/", "MusicPlayer2/Encoder/"))}
+        require(inventory == expected_inventory, "resource baseline mismatch")
+        files = [{"path": name.removeprefix("MusicPlayer2/"), "size": len(archive.read(name)),
+                  "sha256": hashlib.sha256(archive.read(name)).hexdigest()} for name in sorted(names)]
+    return {"protocol": 1, "product": "musicplayer-windows", "minimum_updater": 1, "key_id": "client-v1",
+            "notes": (root / "Documents/client-release-notes.md").read_text(encoding="utf-8").replace("\r\n", "\n"),
+            "files": files, "version": config["version"], "commit": commit, "platform": "windows-x64",
             "server_baseline": {key.removeprefix("server_"): value for key, value in config.items() if key.startswith("server_")},
             "assets": [{"name": archive_path.name, "size": len(archive_bytes), "sha256": digest}],
             "executable_sha256": executable_hash}
+
+
+def verify_signature(root, directory, public_key=None):
+    executable = shutil.which('openssl')
+    if not executable:
+        git = shutil.which('git')
+        if git:
+            for parent in Path(git).resolve().parents:
+                candidate = parent / 'usr/bin/openssl.exe'
+                if candidate.is_file():
+                    executable = str(candidate)
+                    break
+    require(executable, 'OpenSSL is required to verify Ed25519 release signatures')
+    subprocess.run([executable, 'pkeyutl', '-verify', '-pubin', '-rawin', '-inkey',
+                    str(public_key or root / 'updater/internal/trust/public.pem'), '-in',
+                    str(directory / 'client-release-manifest.json'), '-sigfile',
+                    str(directory / 'client-release-manifest.json.sig')], check=True, capture_output=True)
 
 
 def main():
@@ -89,7 +116,14 @@ def main():
     parser.add_argument("--package", type=Path)
     parser.add_argument("--build", type=Path)
     parser.add_argument("--verify-manifest", action="store_true")
+    parser.add_argument("--verify-signature", action="store_true")
+    parser.add_argument("--signature-only", action="store_true")
     args = parser.parse_args()
+    if args.signature_only:
+        require(args.package, '--package required')
+        verify_signature(args.root, args.package)
+        print('PASS signed manifest')
+        return
     config = load_config(args.root, args.ref)
     head = subprocess.check_output(["git", "-C", str(args.root), "rev-parse", "HEAD"], text=True).strip()
     require(not args.commit or args.commit == head, "accepted commit differs from checkout")
@@ -104,6 +138,8 @@ def main():
             require(json.loads(manifest_path.read_text(encoding="utf-8")) == manifest, "published manifest mismatch")
         else:
             manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        if args.verify_signature:
+            verify_signature(args.root, args.package)
     print(f"PASS client release {config['version']} at {head}")
 
 

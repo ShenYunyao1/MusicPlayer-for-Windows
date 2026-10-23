@@ -61,6 +61,9 @@ jobs:
         with:
           go-version: '1.26.x'
           cache-dependency-path: server-source/server/go.sum
+      - name: Signed updater and recovery regressions
+        working-directory: player/updater
+        run: go test -timeout 90s ./...
       - name: Install integration test dependencies
         timeout-minutes: 5
         run: |
@@ -140,7 +143,7 @@ jobs:
   verify-artifact:
     needs: test
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,6 +152,19 @@ jobs:
         with:
           name: MusicPlayer2-windows-x64
           path: dist
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - name: Portable signature and transaction tests
+        working-directory: updater
+        run: go test -timeout 90s ./...
+      - name: Fixture-sign and independently verify accepted ZIP
+        working-directory: updater
+        run: |
+          go run ./cmd/update-tool -mode keygen -directory ../test-results/update-fixture
+          go run ./cmd/update-tool -mode sign -directory ../dist -key ../test-results/update-fixture/private.pem
+          go run ./cmd/update-tool -mode verify -directory ../dist -key ../test-results/update-fixture/public.pem
       - name: Release validation tests on Linux
         run: python3 UnitTest/test-client-release.py
       - name: Verify Windows distribution on Linux
@@ -175,9 +191,20 @@ jobs:
         run: python3 scripts/client-release.py --ref "$GITHUB_REF" --commit "$ACCEPTED_COMMIT" --package dist --verify-manifest
         env:
           ACCEPTED_COMMIT: ${{ needs.test.outputs.commit }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - name: Sign official client manifest and verify complete package
+        working-directory: updater
+        run: |
+          go run ./cmd/update-tool -mode sign -directory ../dist
+          go run ./cmd/update-tool -mode verify -directory ../dist -key internal/trust/public.pem
+        env:
+          CLIENT_UPDATE_SIGNING_KEY: ${{ secrets.CLIENT_UPDATE_SIGNING_KEY }}
       - name: Publish complete release
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/MusicPlayer2.zip dist/MusicPlayer2.zip.sha256 dist/client-release-manifest.json --verify-tag --draft --title "MusicPlayer2 $GITHUB_REF_NAME (Windows x64)" --notes-file Documents/client-release-notes.md
+          gh release create "$GITHUB_REF_NAME" dist/MusicPlayer2.zip dist/MusicPlayer2.zip.sha256 dist/client-release-manifest.json dist/client-release-manifest.json.sig --verify-tag --draft --title "MusicPlayer2 $GITHUB_REF_NAME (Windows x64)" --notes-file Documents/client-release-notes.md
           gh release edit "$GITHUB_REF_NAME" --draft=false --latest
         env:
           GH_TOKEN: ${{ github.token }}

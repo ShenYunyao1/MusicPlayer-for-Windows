@@ -16,7 +16,7 @@ try {
     $BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
     $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
     $files = @{}
-    foreach ($name in @('MusicPlayer2.exe','bass.dll','bass_fx.dll','tag.dll','SciLexer.dll')) {
+    foreach ($name in @('MusicPlayer2.exe','MusicPlayerUpdater.exe','bass.dll','bass_fx.dll','tag.dll','SciLexer.dll')) {
         $path = Join-Path $BuildDirectory $name
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing $name. Build x64 Release first." }
         $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($path))
@@ -85,6 +85,10 @@ public static class ClientPackageResources {
     $release = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'client-release.json') -Raw | ConvertFrom-Json
     if ($release.version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid client release version' }
     $info = "Release: $($release.version)`nPlatform: windows-x64`nBuilt: $($stampLines[0].Trim())`nGit: $($stampLines[1].Trim())`nMusicPlayer2.exe SHA-256: $exeHash`n"
+    $inventory = [ordered]@{}
+    foreach ($name in ($files.Keys | Sort-Object)) {
+        if ($name -cmatch '^(language|skins|Encoder)/') { $inventory[$name] = Get-PackageSHA256 $files[$name] }
+    }
 
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -101,6 +105,9 @@ public static class ClientPackageResources {
         $entry = $archive.CreateEntry('MusicPlayer2/BUILD-INFO.txt')
         $writer = [IO.StreamWriter]::new($entry.Open(),[Text.UTF8Encoding]::new($false))
         try { $writer.Write($info) } finally { $writer.Dispose() }
+        $entry = $archive.CreateEntry('MusicPlayer2/PROGRAM-FILES.json')
+        $writer = [IO.StreamWriter]::new($entry.Open(),[Text.UTF8Encoding]::new($false))
+        try { $writer.Write(($inventory | ConvertTo-Json -Depth 3)) } finally { $writer.Dispose() }
     } finally { $archive.Dispose(); $stream.Dispose() }
     Move-Item -LiteralPath $temporary -Destination $archivePath -Force
     $hash = Get-PackageSHA256 $archivePath

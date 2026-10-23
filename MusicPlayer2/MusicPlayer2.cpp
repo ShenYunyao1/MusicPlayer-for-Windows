@@ -82,6 +82,7 @@ BOOL CMusicPlayerApp::InitInstance()
         m_module_path_reg += L'\"';
     }
     m_module_dir = CCommon::GetExePath();
+    if (CUpdateHelper::RecoverInterrupted()) return FALSE;
     m_appdata_dir = CCommon::GetAppDataConfigDir();
 
     LoadGlobalConfig();
@@ -377,63 +378,7 @@ void CMusicPlayerApp::CheckUpdate(bool message)
     if (m_checking_update)      //如果还在检查更新，则直接返回
         return;
     CFlagLocker update_locker(m_checking_update);
-    CWaitCursor wait_cursor;
-
-    wstring version;		//程序版本
-    wstring link;			//下载链接
-    CUpdateHelper update_helper;
-    update_helper.SetUpdateSource(static_cast<CUpdateHelper::UpdateSource>(m_general_setting_data.update_source));
-    if (!update_helper.CheckForUpdate())
-    {
-        if (message)
-        {
-            const wstring& info = theApp.m_str_table.LoadText(L"MSG_UPDATE_CHECK_FAILED");
-            AfxMessageBox(info.c_str(), MB_OK | MB_ICONWARNING);
-        }
-        return;
-    }
-
-    version = update_helper.GetVersion();
-#ifdef _M_X64
-    link = update_helper.GetLink64();
-#else
-    link = update_helper.GetLink();
-#endif
-
-    if (version.empty() || link.empty())
-    {
-        if (message)
-        {
-            wstring info = theApp.m_str_table.LoadTextFormat(L"MSG_UPDATE_CHECK_ERROR", { L"row_data = " + std::to_wstring(update_helper.IsRowData()) });
-            theApp.m_pMainWnd->MessageBox(info.c_str(), NULL, MB_OK | MB_ICONWARNING);
-        }
-        return;
-    }
-    if (version > APP_VERSION)		//如果服务器上的版本大于本地版本
-    {
-        //根据语言设置选择对应语言版本的更新内容
-        bool is_zh_cn = theApp.m_str_table.IsSimplifiedChinese();
-        wstring contents{ is_zh_cn ? update_helper.GetContentsZhCn() : update_helper.GetContentsEn() };
-
-        wstring info;
-        if (contents.empty())
-            info = theApp.m_str_table.LoadTextFormat(L"MSG_UPDATE_AVLIABLE", { version });
-        else
-            info = theApp.m_str_table.LoadTextFormat(L"MSG_UPDATE_AVLIABLE_2", { version, contents });
-
-        if (theApp.m_pMainWnd->MessageBox(info.c_str(), NULL, MB_YESNO | MB_ICONQUESTION) == IDYES)
-        {
-            ShellExecute(NULL, _T("open"), link.c_str(), NULL, NULL, SW_SHOW);		//转到下载链接
-        }
-    }
-    else
-    {
-        if (message)
-        {
-            const wstring& info = theApp.m_str_table.LoadText(L"MSG_UPDATE_ALREADY");
-            theApp.m_pMainWnd->MessageBox(info.c_str(), NULL, MB_OK | MB_ICONINFORMATION);
-        }
-    }
+    CUpdateHelper::Launch(message);
 }
 
 void CMusicPlayerApp::CheckUpdateInThread(bool message)

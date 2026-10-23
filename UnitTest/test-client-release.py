@@ -38,6 +38,7 @@ class ReleaseTests(unittest.TestCase):
         self.entries = {name: b"fixture" for name in release.expected_entries(self.root)}
         self.entries.update({"MusicPlayer2/" + name: bytes(pe) for name in release.CORE})
         self.entries["MusicPlayer2/global_cfg.ini"] = b"portable-fixture"
+        self.entries["MusicPlayer2/PROGRAM-FILES.json"] = b"{}"
         self.entries["MusicPlayer2/BUILD-INFO.txt"] = (
             f"Release: {self.config['version']}\nPlatform: windows-x64\nGit: {COMMIT}\n"
             f"MusicPlayer2.exe SHA-256: {hashlib.sha256(pe).hexdigest()}\n").encode()

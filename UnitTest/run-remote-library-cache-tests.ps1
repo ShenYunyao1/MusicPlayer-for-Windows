@@ -42,6 +42,8 @@ foreach ($line in $environment) {
     if ($separator -gt 0) { [Environment]::SetEnvironmentVariable($line.Substring(0, $separator), $line.Substring($separator + 1), 'Process') }
 }
 $project = Join-Path $PSScriptRoot '..\MusicPlayer2'
+& $Python (Join-Path $PSScriptRoot '../scripts/client-version.py') --output (Join-Path $PSScriptRoot '../build/generated/ClientVersion.h')
+if ($LASTEXITCODE -ne 0) { throw 'Client version generation failed.' }
 $exe = Join-Path $OutputDirectory 'remote_library_cache.exe'
 Push-Location $OutputDirectory
 try {

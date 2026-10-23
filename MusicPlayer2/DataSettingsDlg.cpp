@@ -182,6 +182,10 @@ BOOL CDataSettingsDlg::OnInitDialog()
         CheckDlgButton(IDC_GITHUB_RADIO, TRUE);
     else
         CheckDlgButton(IDC_GITEE_RADIO, TRUE);
+    GetDlgItem(IDC_GITHUB_RADIO)->ShowWindow(SW_HIDE);
+    GetDlgItem(IDC_GITEE_RADIO)->ShowWindow(SW_HIDE);
+    SetDlgItemTextW(IDC_TXT_OPT_DATA_UPDATE_SOURCE_SEL_STATIC, L"更新来源：MusicPlayer-for-Windows（GitHub）");
+    SetDlgItemTextW(IDC_CHECK_UPDATE_CHECK, L"启动时检查更新（每天最多一次）");
 
     CheckDlgButton(IDC_SAVE_TO_APPDATA_RADIO, !m_data.portable_mode);
     CheckDlgButton(IDC_SAVE_TO_PROGRAM_DIR_RADIO, m_data.portable_mode);

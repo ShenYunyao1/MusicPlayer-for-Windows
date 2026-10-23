@@ -16,7 +16,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     results = root / "test-results"
     results.mkdir(exist_ok=True)
-    core = ("MusicPlayer2.exe", "bass.dll", "bass_fx.dll", "tag.dll", "SciLexer.dll")
+    core = ("MusicPlayer2.exe", "MusicPlayerUpdater.exe", "bass.dll", "bass_fx.dll", "tag.dll", "SciLexer.dll")
     spec = spec_from_file_location("build_layout", Path(__file__).with_name("test-build-layout.py"))
     layout = module_from_spec(spec)
     sys.dont_write_bytecode = True
@@ -56,7 +56,7 @@ def main():
         assert clean_result.returncode == 0, clean_result.stdout.decode(errors="replace") + clean_result.stderr.decode(errors="replace")
         archive_path = output / "MusicPlayer2.zip"
         expected = {"MusicPlayer2/" + name for name in core}
-        expected.update("MusicPlayer2/" + name for name in ("global_cfg.ini", "LICENSE", "README.txt", "BUILD-INFO.txt"))
+        expected.update("MusicPlayer2/" + name for name in ("global_cfg.ini", "LICENSE", "README.txt", "BUILD-INFO.txt", "PROGRAM-FILES.json"))
         for source, target in (("MusicPlayer2/language", "language"), ("MusicPlayer2/skins", "skins"),
                                ("third_party/runtime/common/Encoder", "Encoder")):
             expected.update("MusicPlayer2/" + target + "/" + p.relative_to(root / source).as_posix()

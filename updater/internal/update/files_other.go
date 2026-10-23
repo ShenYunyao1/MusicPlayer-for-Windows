@@ -1,0 +1,8 @@
+//go:build !windows
+
+package update
+
+import "os"
+
+func replaceFile(from, to string) error { return os.Rename(from, to) }
+func isReparse(p string) bool           { return false }

@@ -11,6 +11,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 REAL_GIT = shutil.which("git")
 POWERSHELL = shutil.which("powershell.exe")
+OPENSSL = shutil.which('openssl') or next(str(p / 'usr/bin/openssl.exe') for p in Path(REAL_GIT).resolve().parents if (p / 'usr/bin/openssl.exe').is_file())
 
 STUB = r'''
 import hashlib, json, os, pathlib, subprocess, sys, zipfile
@@ -72,6 +73,10 @@ else:
                     "server_baseline": {k[7:]: v for k, v in config.items() if k.startswith("server_")},
                     "assets": [{"name": "MusicPlayer2.zip", "size": len(archive), "sha256": hashlib.sha256(archive).hexdigest()}]}
         (directory / "client-release-manifest.json").write_text(json.dumps(manifest))
+        subprocess.run([os.environ['PUBLISH_OPENSSL'], 'pkeyutl', '-sign', '-rawin', '-inkey',
+                        str(root / 'test-results/sign-private.pem'), '-in', str(directory / 'client-release-manifest.json'),
+                        '-out', str(directory / 'client-release-manifest.json.sig')], check=True, capture_output=True)
+        if scenario == 'wrong-signature': (directory / 'client-release-manifest.json.sig').write_bytes(b'X' * 64)
         (directory / "MusicPlayer2.zip.sha256").write_text(hashlib.sha256(archive).hexdigest() + "  MusicPlayer2.zip\n")
         if scenario == "corrupt-download": (directory / "MusicPlayer2.zip").write_bytes(archive + b"corrupt")
     elif args[0] == "api" and "/actions/runs?" in args[1]:
@@ -86,7 +91,7 @@ else:
             runs = [stale, run]
         print(json.dumps({"workflow_runs": runs}))
     elif args[0] == "api" and "/releases/tags/" in args[1]:
-        names = ["MusicPlayer2.zip", "MusicPlayer2.zip.sha256", "client-release-manifest.json"]
+        names = ["MusicPlayer2.zip", "MusicPlayer2.zip.sha256", "client-release-manifest.json", "client-release-manifest.json.sig"]
         if scenario == "missing-asset": names.pop()
         print(json.dumps({"tag_name": "v0.1.0", "draft": False, "prerelease": False,
                           "html_url": "https://github.com/fixture/player/releases/tag/v0.1.0",
@@ -104,10 +109,19 @@ class PublishTests(unittest.TestCase):
         self.git("config", "user.name", "Publish fixture")
         self.git("config", "user.email", "fixture@example.invalid")
         self.git("remote", "add", "origin", "https://github.com/fixture/player.git")
-        for name in ("publish.ps1", "publish.bat", "client-release.json", "Documents/client-release-notes.md", ".github/workflows/windows-release.yml"):
+        for name in ("publish.ps1", "publish.bat", "client-release.json", "Documents/client-release-notes.md", ".github/workflows/windows-release.yml", "scripts/client-release.py"):
             destination = self.root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, destination)
+        config = json.loads((self.root / 'client-release.json').read_text())
+        config['version'] = '0.1.0'
+        (self.root / 'client-release.json').write_text(json.dumps(config))
+        (self.root / 'Documents/client-release-notes.md').write_text('# fixture release 0.1.0')
+        (self.root / 'test-results').mkdir()
+        public = self.root / 'updater/internal/trust/public.pem'
+        public.parent.mkdir(parents=True)
+        subprocess.run([OPENSSL, 'genpkey', '-algorithm', 'ED25519', '-out', str(self.root / 'test-results/sign-private.pem')], check=True, capture_output=True)
+        subprocess.run([OPENSSL, 'pkey', '-in', str(self.root / 'test-results/sign-private.pem'), '-pubout', '-out', str(public)], check=True, capture_output=True)
         (self.root / ".gitignore").write_text("/test-results/\n", encoding="utf-8")
         self.git("add", ".")
         self.git("commit", "-m", "Fixture")
@@ -118,6 +132,7 @@ class PublishTests(unittest.TestCase):
             (tools / (kind + ".bat")).write_text(
                 f'@echo off\r\n"{sys.executable}" "%~dp0fake-cli.py" {kind} %*\r\nexit /b %errorlevel%\r\n')
         self.environment = dict(os.environ, PUBLISH_FIXTURE=str(self.root), PUBLISH_REAL_GIT=REAL_GIT,
+                                PUBLISH_OPENSSL=OPENSSL,
                                 GH_TOKEN="fixture-secret", MUSIC_PLAYER_NO_PAUSE="1")
 
     def git(self, *arguments):
@@ -205,6 +220,11 @@ class PublishTests(unittest.TestCase):
                 result = self.invoke("Release", scenario)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(message, result.stdout + result.stderr)
+
+    def test_bad_release_signature(self):
+        result = self.invoke('Release', 'wrong-signature')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('RELEASE VERIFIED', result.stdout)
 
     def test_no_wait_and_up_to_date_build(self):
         result = self.invoke("Build", "up-to-date", "-NoWait")

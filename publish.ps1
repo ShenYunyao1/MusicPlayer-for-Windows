@@ -76,14 +76,15 @@ function Runs {
 function Verify-Release {
     $release = Gh @('api', "repos/$repository/releases/tags/$tag") | ConvertFrom-Json
     Require ($release.tag_name -ceq $tag -and !$release.draft -and !$release.prerelease) 'Release is not a matching public stable release.'
-    $expected = @('MusicPlayer2.zip', 'MusicPlayer2.zip.sha256', 'client-release-manifest.json')
+    $expected = @('MusicPlayer2.zip', 'MusicPlayer2.zip.sha256', 'client-release-manifest.json', 'client-release-manifest.json.sig')
     $actual = @($release.assets | ForEach-Object { $_.name })
-    Require ($actual.Count -eq 3 -and !(Compare-Object ($expected | Sort-Object) ($actual | Sort-Object))) 'Release assets are incomplete or unexpected.'
+    Require ($actual.Count -eq 4 -and !(Compare-Object ($expected | Sort-Object) ($actual | Sort-Object))) 'Release assets are incomplete or unexpected.'
     foreach ($asset in $release.assets) { Require ($asset.size -gt 0) 'A release asset is empty.' }
     $directory = Join-Path $root ('test-results/publish/' + $tag + '-' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $directory -Force
     $null = Gh @('release', 'download', $tag, '--repo', $repository, '--dir', $directory,
-        '--pattern', 'MusicPlayer2.zip', '--pattern', 'MusicPlayer2.zip.sha256', '--pattern', 'client-release-manifest.json')
+        '--pattern', 'MusicPlayer2.zip', '--pattern', 'MusicPlayer2.zip.sha256', '--pattern', 'client-release-manifest.json', '--pattern', 'client-release-manifest.json.sig')
+    $null = Invoke-Tool (Get-Command python -ErrorAction Stop).Source @((Join-Path $root 'scripts/client-release.py'), '--package', $directory, '--signature-only')
     $manifest = Get-Content -LiteralPath (Join-Path $directory 'client-release-manifest.json') -Raw | ConvertFrom-Json
     Require ($manifest.version -ceq $config.version -and $manifest.commit -ceq $commit -and $manifest.platform -ceq 'windows-x64') 'Release manifest identity mismatch.'
     foreach ($field in @('repository', 'commit', 'version', 'schema')) {
@@ -139,7 +140,7 @@ try {
         if ($Version) { Require ($Version -ceq $config.version) 'Requested version differs from client-release.json.' }
         $Version = $config.version
         $tag = 'v' + $Version
-        $notes = Get-Content -LiteralPath (Join-Path $root 'Documents/client-release-notes.md') -Encoding UTF8
+        $notes = @(Get-Content -LiteralPath (Join-Path $root 'Documents/client-release-notes.md') -Encoding UTF8)
         Require ($notes[0] -match ('(?<![0-9.])' + [regex]::Escape($Version) + '(?![0-9.])')) 'Release notes version mismatch.'
         $localTag = Git @('show-ref', '--verify', '--quiet', "refs/tags/$tag") -AllowFailure
         Require ($localTag.Code -eq 1) 'Local release tag already exists; never overwrite a version tag.'

@@ -577,4 +577,5 @@ protected:
     afx_msg LRESULT OnClearUiSerchBox(WPARAM wParam, LPARAM lParam);
 public:
     afx_msg BOOL OnNcActivate(BOOL bActive);
+    afx_msg LRESULT OnInstallClientUpdate(WPARAM wParam, LPARAM lParam);
 };
