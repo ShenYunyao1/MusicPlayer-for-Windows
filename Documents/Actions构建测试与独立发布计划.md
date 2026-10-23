@@ -37,7 +37,7 @@
 - [x] 独立公开仓库已创建，本地 origin／upstream 与默认推送目标已核对。
 - [x] 首次源码推送完成，master 已跟踪 origin/master，未推送版本标签。
 - [x] 首次 Actions 全部通过；Windows 编译、协议／缓存／集成、打包及 Ubuntu 产物复核均通过。
-- [ ] 首次标签发行资产与提交号核对通过。
+- [x] 首次标签发行资产与提交号核对通过：v0.1.0，三个固定资产完整，发布及下载复核通过。
 
 ## 本地验收记录
 
@@ -58,3 +58,5 @@
 2026-10-24：提交 b599a3fb 的自动 push 运行 `40000189910` 已成功，test、build-x86 均 success，release 按普通分支规则 skipped。下载构建产物进一步复核时发现默认配置在 Windows checkout 为 CRLF、本地为 LF；规范化换行后文本完全相同，但原始字节比较误判为个人配置，这也会阻断 Linux 发布校验。新增回归先复现该错误，再将默认文本校验调整为仅允许 CRLF/LF 差异，其他内容仍须严格相同；增加 Ubuntu verify-artifact 门禁，后续所有分支构建均检查 Windows 分发包在 Linux 上的校验结果。
 
 2026-10-24：提交 `4e86bac4f191bed520d489c0589d2b047c4b2614` 的自动 push 运行 [40001277626](https://github.com/ShenYunyao1/MusicPlayer-for-Windows/actions/runs/40001277626) 全部通过：test、build-x86、verify-artifact 均 success，release 按普通分支规则 skipped。已下载 MusicPlayer2-windows-x64 产物，独立核对 ZIP 白名单、默认配置、PE 架构、大小／SHA-256、发行清单及 EXE 内嵌提交号，均与该提交一致。没有推送版本标签，Release 列表为空，云端服务器未变更。本条验收记录单独本地提交，不为文档更新重复触发整套构建。
+
+2026-10-24：用户随后授权测试完成后在线发布。[参数化推送发布脚本](参数化推送发布脚本.md) 已完成隔离测试，并实际用于推送提交 `4f479f35f0005e84a4c016d06eff4614f59ca3fe` 和 v0.1.0 标签；标签运行 [40005476050](https://github.com/ShenYunyao1/MusicPlayer-for-Windows/actions/runs/40005476050) 的全部门禁与 release 均成功。[v0.1.0](https://github.com/ShenYunyao1/MusicPlayer-for-Windows/releases/tag/v0.1.0) 已公开为 latest，三个固定资产的大小／SHA-256、清单、ZIP 与 EXE 内嵌提交号均通过独立核对。服务器未部署或重启。
