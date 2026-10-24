@@ -2632,6 +2632,13 @@ void CMusicPlayerDlg::OnTimer(UINT_PTR nIDEvent)
         //获取频谱分析数据
         CPlayer::GetInstance().CalculateSpectralData();
 
+        static ULONGLONG remote_tick{};
+        if (GetTickCount64()-remote_tick>=1000 && !CPlayer::GetInstance().IsLoading())
+        {
+            remote_tick=GetTickCount64();
+            if (CPlayer::GetInstance().ProcessRemoteSynchronization()) ShowPlayList(false);
+        }
+
         m_process_msg_helper.PositionChanged();
 
         // 这里在更改播放状态，需要先取得锁，没有成功取得锁的话下次再试

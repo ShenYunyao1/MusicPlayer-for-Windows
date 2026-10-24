@@ -64,6 +64,7 @@ void CServerLibraryDlg::UpdateButtons()
 }
 void CServerLibraryDlg::OnTabEntered()
 {
+    CRemoteLibraryManager::Instance().SetBrowserActive(true);
     auto space=RemoteLibraryConfig::Load().Client().CacheDirectory();
     if (space!=m_loaded_namespace)
     {
@@ -92,8 +93,9 @@ void CServerLibraryDlg::SaveState()
     m_state.top_row=m_track_list.GetTopIndex();
     CRemoteLibraryManager::Instance().SaveBrowseState(m_state);
 }
-void CServerLibraryDlg::RenderPlaylists()
+void CServerLibraryDlg::RenderPlaylists(bool render_tracks)
 {
+    const int list_top=m_playlist_list.GetTopIndex();
     m_rendering=true;
     m_playlist_list.ResetContent();
     m_selected_playlist=-1;
@@ -106,16 +108,23 @@ void CServerLibraryDlg::RenderPlaylists()
     }
     if (m_selected_playlist<0 && !m_playlists.empty()) m_selected_playlist=0;
     m_playlist_list.SetCurSel(m_selected_playlist);
-    RenderTracks();
+    if (list_top>=0) m_playlist_list.SetTopIndex(list_top);
+    if (render_tracks) RenderTracks();
     m_rendering=false;
     UpdateButtons();
 }
 void CServerLibraryDlg::RenderTracks()
 {
-    m_track_list.DeleteAllItems();
     SetDlgItemTextW(IDC_SERVER_NOTES,L"");
-    if (m_selected_playlist<0 || m_selected_playlist>=static_cast<int>(m_playlists.size())) return;
+    if (m_selected_playlist<0 || m_selected_playlist>=static_cast<int>(m_playlists.size()))
+    { m_track_list.DeleteAllItems(); m_rendered_tracks.clear(); return; }
     const auto& playlist=m_playlists[m_selected_playlist];
+    std::vector<std::string> identities;
+    if (playlist.Available()) for (const auto& t:playlist.tracks) identities.push_back(t.id);
+    const bool rebuild=identities!=m_rendered_tracks;
+    if (rebuild) m_track_list.DeleteAllItems();
+    else m_track_list.SetItemState(-1,0,LVIS_SELECTED|LVIS_FOCUSED);
+    m_rendered_tracks=identities;
     if (!playlist.Available())
     {
         SetDlgItemTextW(IDC_SERVER_NOTES,(playlist.UnavailableReason()+L"；恢复可见性、分享授权和账户状态后在线刷新可用，亦可在网页取消订阅。").c_str());
@@ -126,10 +135,10 @@ void CServerLibraryDlg::RenderTracks()
     for (const auto& track:playlist.tracks)
     {
         const auto title=track.unavailable ? L"[不可用] "+track.title : track.title;
-        m_track_list.InsertItem(row,title.c_str());
-        m_track_list.SetItemText(row,1,track.artist.c_str());
-        m_track_list.SetItemText(row,2,track.album.c_str());
-        m_track_list.SetItemText(row,3,track.genre.c_str());
+        if (rebuild) m_track_list.InsertItem(row,title.c_str());
+        const std::wstring columns[]={title,track.artist,track.album,track.genre};
+        for (int col=0;col<4;++col)
+            if (m_track_list.GetItemText(row,col)!=columns[col].c_str()) m_track_list.SetItemText(row,col,columns[col].c_str());
         if (track.id==m_state.track_id) m_track_list.SetItemState(row,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
         ++row;
     }
@@ -199,61 +208,33 @@ void CServerLibraryDlg::OnConfigure()
 }
 void CServerLibraryDlg::OnTimer(UINT_PTR timer)
 {
+    const auto latest=CRemoteLibraryManager::Instance().CurrentLibrary();
+    if (!m_library_task && latest && latest!=m_seen_task) m_library_task=latest;
     if (m_library_task && m_library_task->done.load(std::memory_order_acquire))
     {
         auto task=m_library_task; m_library_task.reset();
+        m_seen_task=task;
         if (task->namespace_id!=RemoteLibraryConfig::Load().Client().CacheDirectory())
         { OnTabEntered(); return; }
-        if ((task->success && !task->offline && !task->local_only) || task->access_blocked)
-        {
-            CPlayer::GetInstance().ValidateRemotePlaylistAccess();
-            CRemoteLibraryManager::Instance().RemoveUnavailableRecentPlaylists();
-            CMusicPlayerCmdHelper::RefreshMediaTabData(CMusicPlayerCmdHelper::ML_PLAYLIST);
+        if (!CPlayer::GetInstance().IsLoading() && CPlayer::GetInstance().ProcessRemoteSynchronization())
             CMusicPlayerDlg::GetInstance()->ShowPlayList(false);
-        }
         if (task->access_blocked && !task->success) { m_playlists.clear(); RenderPlaylists(); }
-        std::wstring refresh_error;
-        bool updated_current = false, updated_lists = false;
-        if (task->success && !task->offline && !task->local_only)
-        {
-            auto& library = CRemoteLibraryManager::Instance();
-            auto& player = CPlayer::GetInstance();
-            for (const auto& playlist : task->playlists)
-            {
-                if (!playlist.Available()) continue;
-                const auto paths = library.MaterializedPaths(playlist);
-                if (paths.empty()) continue;
-                const auto current_path = player.GetPlaylistPath();
-                if (player.IsPlaylistMode() && std::find(paths.begin(), paths.end(), current_path) != paths.end())
-                {
-                    if (!player.RefreshCurrentRemotePlaylist(playlist, refresh_error)) break;
-                    updated_current = true;
-                }
-                else
-                {
-                    std::wstring path;
-                    if (!library.Materialize(playlist, paths.front(), path, refresh_error)) break;
-                    CRecentList::Instance().AddNewItem({ LT_PLAYLIST, path });
-                    int duration = 0;
-                    for (const auto& track : playlist.tracks) duration += track.duration_ms;
-                    CRecentList::Instance().SetPlaylistTotalInfo({ LT_PLAYLIST, path },
-                        static_cast<int>(playlist.tracks.size()), duration);
-                }
-                updated_lists = true;
-            }
-            if (updated_lists)
-            {
-                CRecentList::Instance().SaveData();
-                CMusicPlayerCmdHelper::RefreshMediaTabData(CMusicPlayerCmdHelper::ML_PLAYLIST);
-                if (updated_current) CMusicPlayerDlg::GetInstance()->ShowPlayList(false);
-            }
-        }
         if (task->success)
         {
-            SaveState(); m_playlists=task->playlists; RenderPlaylists();
+            bool changed=m_playlists.size()!=task->playlists.size();
+            for (size_t i=0;!changed && i<m_playlists.size();++i)
+                changed=m_playlists[i].id!=task->playlists[i].id || m_playlists[i].fingerprint!=task->playlists[i].fingerprint;
+            if (changed)
+            {
+                SaveState(); bool selected_changed=true;
+                const auto old=std::find_if(m_playlists.begin(),m_playlists.end(),[this](const RemotePlaylist& p){return p.id==m_state.playlist_id;});
+                const auto next=std::find_if(task->playlists.begin(),task->playlists.end(),[this](const RemotePlaylist& p){return p.id==m_state.playlist_id;});
+                if (old!=m_playlists.end() && next!=task->playlists.end()) selected_changed=old->fingerprint!=next->fingerprint;
+                m_playlists=task->playlists; RenderPlaylists(selected_changed);
+            }
             if (m_playlists.empty()) task->status+=L"当前 Key 没有可见歌单，请在网页授权本人歌单、有效订阅或全局曲库。";
         }
-        SetDlgItemTextW(IDC_SERVER_STATUS,(refresh_error.empty() ? task->status : refresh_error).c_str());
+        SetDlgItemTextW(IDC_SERVER_STATUS,task->status.c_str());
         // First run has no offline snapshot: obtain the library from the server.
         if (!task->success && task->local_only && !*task->cancel) OnRefresh();
         UpdateButtons();
@@ -267,6 +248,7 @@ void CServerLibraryDlg::OnTimer(UINT_PTR timer)
 }
 void CServerLibraryDlg::OnDestroy()
 {
+    CRemoteLibraryManager::Instance().SetBrowserActive(false);
     SaveState(); KillTimer(1);
     CTabDlg::OnDestroy();
 }

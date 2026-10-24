@@ -1606,6 +1606,11 @@ bool CPlayerUIBase::IsMiniMode() const
 
 CRect CPlayerUIBase::DrawProgressBar(CRect rect, bool play_time_both_side)
 {
+    const auto download=CPlayer::GetInstance().DownloadProgress();
+    const bool downloading=CPlayer::GetInstance().DownloadOnly();
+    const std::wstring phase=download.phase==RemoteTransferPhase::Verifying ? L"校验" :
+        download.phase==RemoteTransferPhase::Checking ? L"检查缓存" : download.phase==RemoteTransferPhase::Queued ? L"等待下载" : L"下载";
+    const std::wstring percentage=download.total ? std::to_wstring(static_cast<int>(download.Fraction()*100))+L"%" : L"…";
     //绘制播放时间
     bool draw_progress_time{ rect.Width() > DPI(110) };
     CRect progress_rect{ rect };
@@ -1617,6 +1622,7 @@ CRect CPlayerUIBase::DrawProgressBar(CRect rect, bool play_time_both_side)
             CRect rc_time_left{ rect }, rc_time_right{ rect };
             std::wstring str_cur_time = CPlayTime(CPlayer::GetInstance().GetCurrentPosition()).toString(false);
             std::wstring str_song_length = CPlayTime(CPlayer::GetInstance().GetSongLength()).toString(false);
+            if (downloading) { str_cur_time=phase; str_song_length=percentage; }
             int left_width = m_draw.GetTextExtent(str_cur_time.c_str()).cx;
             int right_width = m_draw.GetTextExtent(str_song_length.c_str()).cx;
             rc_time_left.right = rc_time_left.left + left_width;
@@ -1630,6 +1636,7 @@ CRect CPlayerUIBase::DrawProgressBar(CRect rect, bool play_time_both_side)
         {
             CRect rc_time = rect;
             wstring strTime = CPlayer::GetInstance().GetTimeString();
+            if (downloading) strTime=phase+L" "+percentage;
 
             CSize strSize = m_draw.GetTextExtent(strTime.c_str());
             rc_time.left = rc_time.right - strSize.cx;
@@ -1656,7 +1663,11 @@ CRect CPlayerUIBase::DrawProgess(CRect rect)
     else
         m_draw.FillRect(rect, m_colors.color_progress_back);
 
-    double progress = static_cast<double>(CPlayer::GetInstance().GetCurrentPosition()) / CPlayer::GetInstance().GetSongLength();
+    const bool downloading=CPlayer::GetInstance().DownloadOnly();
+    const auto transfer=CPlayer::GetInstance().DownloadProgress();
+    const auto length=CPlayer::GetInstance().GetSongLength();
+    double progress = downloading ? transfer.Fraction() : length>0 ? static_cast<double>(CPlayer::GetInstance().GetCurrentPosition()) / length : 0;
+    const auto foreground=downloading ? RGB(54,156,244) : m_colors.color_spectrum;
     if (progress > 1)
         progress = 1;
     double progress_width_double{ progress * rect.Width() };
@@ -1664,16 +1675,17 @@ CRect CPlayerUIBase::DrawProgess(CRect rect)
     CRect played_rect = rect;
     played_rect.right = played_rect.left + progress_width;
     if (played_rect.right > played_rect.left)
-        m_draw.FillRect(played_rect, m_colors.color_spectrum);
+        m_draw.FillRect(played_rect, foreground);
     //绘制进度条最右侧一像素
     //进度条最右侧一像素根据当前进度计算出透明度，以使得进度条的变化更加平滑
     BYTE alpha{ static_cast<BYTE>((progress_width_double - progress_width) * 256) };
     played_rect.left = played_rect.right;
     played_rect.right = played_rect.left + 1;
-    m_draw.FillAlphaRect(played_rect, m_colors.color_spectrum, alpha);
+    m_draw.FillAlphaRect(played_rect, foreground, alpha);
 
     //绘制AB重复的标记
-    DrawABRepeat(rect);
+    if (!downloading) DrawABRepeat(rect);
+    DrawDownloadOverlay(rect);
 
     //进度条能响应鼠标消息的区域（上下各增加3像素）
     CRect progress_rect = rect;
@@ -1681,8 +1693,34 @@ CRect CPlayerUIBase::DrawProgess(CRect rect)
     return progress_rect;
 }
 
+void CPlayerUIBase::DrawDownloadOverlay(CRect rect)
+{
+    const auto p=CPlayer::GetInstance().DownloadProgress();
+    if (!p.bulk || !p.Active()) return;
+    rect.top=rect.bottom+DPI(1); rect.bottom=rect.top+DPI(2);
+    m_draw.FillRect(rect,m_colors.color_progress_back);
+    rect.right=rect.left+static_cast<int>(rect.Width()*p.Fraction());
+    if (rect.Width()>0) m_draw.FillRect(rect,RGB(245,164,64));
+}
+
+std::wstring CPlayerUIBase::DownloadTooltip() const
+{
+    const auto p=CPlayer::GetInstance().DownloadProgress();
+    if (!p.Active()) return {};
+    const wchar_t* phase=p.phase==RemoteTransferPhase::Checking ? L"检查缓存" :
+        p.phase==RemoteTransferPhase::Queued ? L"等待下载" : p.phase==RemoteTransferPhase::Verifying ? L"校验文件" : L"下载中";
+    auto size=[](std::uint64_t n) { return std::to_wstring(n/1024)+L" KiB"; };
+    std::wstring text=std::wstring(phase)+L"："+p.name+L"\n"+size(p.bulk?p.completed_bytes+p.bytes:p.bytes);
+    const auto total=p.bulk?p.total_bytes:p.total;
+    if (total) text+=L" / "+size(total)+L" ("+std::to_wstring(static_cast<int>(p.Fraction()*100))+L"%)";
+    if (p.bytes_per_second>0) text+=L"，"+size(static_cast<std::uint64_t>(p.bytes_per_second))+L"/s";
+    if (p.bulk) text+=L"\n已完成 "+std::to_wstring(p.completed_files)+L" / "+std::to_wstring(p.total_files)+L" 首";
+    return text;
+}
+
 void CPlayerUIBase::DrawABRepeat(CRect rect)
 {
+    if (CPlayer::GetInstance().DownloadOnly() || CPlayer::GetInstance().GetSongLength()<=0) return;
     auto ab_repeat_mode = CPlayer::GetInstance().GetABRepeatMode();
     if (ab_repeat_mode == CPlayer::AM_A_SELECTED || ab_repeat_mode == CPlayer::AM_AB_REPEAT)
     {

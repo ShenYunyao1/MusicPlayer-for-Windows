@@ -7,6 +7,7 @@
 #include "nlohmann/json.hpp"
 #include <filesystem>
 #include <fstream>
+#include <set>
 
 namespace
 {
@@ -74,7 +75,12 @@ void CRemoteLibraryManager::Worker()
         catch (const std::exception& e) { job.first->status=L"服务器任务失败："+Wide(e.what()); }
         if (*job.first->cancel) { job.first->success=false; job.first->status=L"任务已取消，已完成缓存保留。"; }
         if (!job.first->continuation || *job.first->cancel)
+        {
+            auto progress=job.first->transfer.Read();
+            progress.phase=*job.first->cancel ? RemoteTransferPhase::Cancelled : job.first->success ? RemoteTransferPhase::Ready : RemoteTransferPhase::Failed;
+            job.first->transfer.Set(progress);
             job.first->done.store(true,std::memory_order_release);
+        }
         std::lock_guard<std::mutex> lock(m_mutex); m_active.reset();
     }
 }
@@ -98,10 +104,12 @@ std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::Library(bool refresh)
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_library && m_library_namespace==client.CacheDirectory() && (!refresh || !m_library->done)) return m_library;
         if (m_library && !m_library->done) *m_library->cancel=true;
+        if (m_library_namespace!=client.CacheDirectory()) m_refresh.Reset();
         m_library_namespace=client.CacheDirectory();
         task=m_library=std::make_shared<RemoteLibraryTask>();
         task->namespace_id=client.CacheDirectory();
         task->local_only=!refresh;
+        if (refresh) m_refresh.Started();
     }
     client.SetCancellation(task->cancel);
     if (refresh) RetryConnection();
@@ -124,6 +132,59 @@ void CRemoteLibraryManager::RetryConnection()
     std::lock_guard<std::mutex> lock(m_mutex); m_offline_until.clear();
 }
 
+void CRemoteLibraryManager::ConfigurationChanged()
+{
+    const auto space=RemoteLibraryConfig::Load().Client().CacheDirectory();
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (space==m_library_namespace) return;
+    if (m_active) *m_active->cancel=true;
+    for (auto& job:m_jobs) *job.first->cancel=true;
+    m_library.reset(); m_foreground.reset(); m_bulk.reset(); m_observed.reset();
+    m_library_namespace=space; m_refresh.Reset();
+}
+
+std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::CurrentLibrary()
+{
+    std::lock_guard<std::mutex> lock(m_mutex); return m_library;
+}
+
+std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::PollSynchronization(bool remote_playlist)
+{
+    std::shared_ptr<RemoteLibraryTask> completed;
+    bool start=false;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_library && m_library->done.load(std::memory_order_acquire) && m_library!=m_observed)
+        {
+            m_observed=m_library;
+            if (!m_library->local_only)
+            {
+                m_refresh.Finished(GetTickCount64(),m_library->success && !m_library->offline);
+                completed=m_library;
+            }
+        }
+        start=m_refresh.Due(GetTickCount64(),m_browser_active || remote_playlist,m_library && !m_library->done);
+    }
+    if (start && RemoteLibraryConfig::Load().Client().IsConfigured()) Library(true);
+    return completed;
+}
+
+RemoteTransferProgress CRemoteLibraryManager::TransferProgress(const std::wstring& path, bool foreground) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto task=foreground ? m_foreground : m_bulk;
+    if (!task || task->done || *task->cancel || task->namespace_id!=m_library_namespace) return {};
+    auto p=task->transfer.Read();
+    if (foreground && p.path!=path) return {};
+    return p;
+}
+
+std::string CRemoteLibraryManager::TrackIdentity(const std::wstring& path)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto it=m_tracks.find(path); return it==m_tracks.end() ? "" : it->second.track.id;
+}
+
 std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::Prepare(const std::wstring& path, bool allow_network)
 {
     Binding binding;
@@ -133,6 +194,15 @@ std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::Prepare(const std::wst
         binding=it->second;
     }
     auto task=std::make_shared<RemoteLibraryTask>(); task->path=path; task->local_only=!allow_network;
+    task->namespace_id=binding.client.CacheDirectory();
+    RemoteTransferProgress queued; queued.phase=RemoteTransferPhase::Queued; queued.path=path;
+    queued.total=binding.track.size; queued.name=binding.track.title; queued.namespace_id=task->namespace_id;
+    task->transfer.Set(queued);
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_foreground=task; m_library_namespace=task->namespace_id;
+    }
+    binding.client.SetProgress([task](const RemoteTransferProgress& p){task->transfer.Set(p);});
     binding.client.SetCancellation(task->cancel);
     Enqueue(task,[this,task,binding,allow_network]() mutable {
         if (binding.client.CacheDirectory()!=RemoteLibraryConfig::Load().Client().CacheDirectory())
@@ -159,6 +229,8 @@ std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::SaveOffline(const Remo
 {
     auto task=std::make_shared<RemoteLibraryTask>();
     auto client=RemoteLibraryConfig::Load().Client(); client.SetCancellation(task->cancel);
+    task->namespace_id=client.CacheDirectory();
+    { std::lock_guard<std::mutex> lock(m_mutex); m_bulk=task; m_library_namespace=task->namespace_id; }
     auto available=std::make_shared<RemotePlaylist>(playlist);
     if (!playlist.Available())
     {
@@ -166,26 +238,44 @@ std::shared_ptr<RemoteLibraryTask> CRemoteLibraryManager::SaveOffline(const Remo
         task->done.store(true,std::memory_order_release);
         return task;
     }
-    available->tracks.erase(std::remove_if(available->tracks.begin(),available->tracks.end(),
-        [](const RemoteTrack& t){return t.unavailable;}),available->tracks.end());
-    SaveOfflineStep(task,client,available,0);
+    RemoteTransferProgress queued; queued.bulk=true; queued.phase=RemoteTransferPhase::Queued;
+    queued.namespace_id=task->namespace_id; task->transfer.Set(queued);
+    // Preflight runs on the worker: hashing a large cache must never block the UI.
+    Enqueue(task,[this,task,client,available]() mutable {
+        auto p=task->transfer.Read(); p.phase=RemoteTransferPhase::Checking; task->transfer.Set(p);
+        available->tracks=PendingRemoteTracks(available->tracks,
+            [&client,task](const RemoteTrack& t){return !*task->cancel && client.CacheValid(t);});
+        for (const auto& t:available->tracks) p.total_bytes+=t.size;
+        p.total_files=available->tracks.size(); task->transfer.Set(p);
+        task->continuation=true;
+        SaveOfflineStep(task,client,available,0);
+    });
     return task;
 }
 
 void CRemoteLibraryManager::SaveOfflineStep(std::shared_ptr<RemoteLibraryTask> task, CRemoteLibraryClient client, std::shared_ptr<RemotePlaylist> playlist, size_t index)
 {
-    Enqueue(task,[this,task,client,playlist,index] {
+    Enqueue(task,[this,task,client,playlist,index]() mutable {
         if (client.CacheDirectory()!=RemoteLibraryConfig::Load().Client().CacheDirectory() || !client.PlaylistAllowed(playlist->id))
         { task->status=L"歌单授权或服务器配置已变化，请刷新。"; return; }
         if (index>=playlist->tracks.size())
         {
             task->success=true;
-            task->status=L"离线保存完成，共 "+std::to_wstring(index)+L" 首；不可用曲目已跳过。";
+            task->status=L"离线保存完成，本次下载 "+std::to_wstring(index)+L" 首；已缓存及不可用曲目已跳过。";
             return;
         }
+        client.SetProgress([task](const RemoteTransferProgress& current) {
+            auto p=task->transfer.Read();
+            p.phase=current.phase==RemoteTransferPhase::Ready ? RemoteTransferPhase::Verifying : current.phase;
+            p.bytes=current.bytes; p.total=current.total;
+            p.path=current.path; p.name=current.name; p.bytes_per_second=current.bytes_per_second;
+            task->transfer.Set(p);
+        });
         if (!client.EnsureCached(playlist->tracks[index],task->path,task->status)) return;
         client.RefreshArtwork(playlist->tracks[index]);
         if (*task->cancel) return;
+        auto p=task->transfer.Read(); p.completed_bytes+=playlist->tracks[index].size;
+        ++p.completed_files; p.bytes=0; p.phase=RemoteTransferPhase::Queued; task->transfer.Set(p);
         // One track per job lets playback preparation run between downloads.
         task->continuation=true;
         SaveOfflineStep(task,client,playlist,index+1);
@@ -219,7 +309,7 @@ std::vector<std::wstring> CRemoteLibraryManager::MaterializedPaths(const RemoteP
 }
 
 bool CRemoteLibraryManager::Materialize(const RemotePlaylist& playlist, const std::wstring& preferred_path,
-    std::wstring& path, std::wstring& error)
+    std::wstring& path, std::wstring& error, bool force)
 {
     try
     {
@@ -238,7 +328,8 @@ bool CRemoteLibraryManager::Materialize(const RemotePlaylist& playlist, const st
             path = related_paths.front();
         else
             path = stable_path;
-        json manifest={{"version",3},{"namespace",Utf8(client.CacheDirectory())},{"name",Utf8(playlist.name)},{"id",playlist.id},{"tracks",json::array()}};
+        if (!force && !NeedsMaterialize(playlist,path)) return LoadPlaylist(path);
+        json manifest={{"version",3},{"namespace",Utf8(client.CacheDirectory())},{"name",Utf8(playlist.name)},{"id",playlist.id},{"fingerprint",playlist.fingerprint},{"tracks",json::array()}};
         std::vector<SongInfo> songs;
         for (const auto& track:playlist.tracks)
         {
@@ -261,6 +352,18 @@ bool CRemoteLibraryManager::Materialize(const RemotePlaylist& playlist, const st
         return true;
     }
     catch (const std::exception& e) { error=L"保存播放歌单失败："+Wide(e.what()); return false; }
+}
+
+bool CRemoteLibraryManager::NeedsMaterialize(const RemotePlaylist& playlist, const std::wstring& path) const
+{
+    if (playlist.fingerprint.empty() || !CCommon::FileExist(path)) return true;
+    try
+    {
+        std::ifstream in(path+L".remote.json",std::ios::binary);
+        const auto old=json::parse(in);
+        return old.value("fingerprint","")!=playlist.fingerprint;
+    }
+    catch (const std::exception&) { return true; }
 }
 
 bool CRemoteLibraryManager::LoadPlaylist(const std::wstring& path)

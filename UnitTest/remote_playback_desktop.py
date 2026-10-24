@@ -242,7 +242,11 @@ class Desktop:
         assert u.PostMessageW(self.main, 273, number, 0)
 
     def click(self, number):
-        self.send(self.control(number), 245)
+        hwnd=until(lambda: self.control(number), "button exists: " + str(number))
+        until(lambda: u.IsWindowEnabled(hwnd), "button enabled: " + str(number))
+        # BM_CLICK can be dropped for an inactive dialog (Win32 contract).
+        # Dispatch its BN_CLICKED notification without stealing user focus.
+        self.send(u.GetParent(hwnd), 273, number, hwnd)
 
     def title(self):
         buf = c.create_unicode_buffer(2048)
@@ -457,6 +461,21 @@ def run(args):
         assert len(fixture.requests) == count, "cache playback must not use HTTP"
         manifest = main_manifests[0]
         original = manifest.read_bytes()
+        linked_playlist = Path(str(manifest)[:-12])
+        timestamps = (manifest.stat().st_mtime_ns, linked_playlist.stat().st_mtime_ns)
+        sync_count = sum(path.startswith("/api/v2/sync") for path in fixture.requests)
+        desktop.click(8108)
+        until(lambda: sum(path.startswith("/api/v2/sync") for path in fixture.requests) > sync_count,
+              "manual empty refresh bypasses hourly schedule")
+        until(lambda: u.IsWindowEnabled(desktop.control(8108)), "empty refresh completes")
+        time.sleep(1.2)  # Main-window synchronization observer runs every second.
+        assert timestamps == (manifest.stat().st_mtime_ns, linked_playlist.stat().st_mtime_ns), "unchanged refresh rewrote materialized files"
+        assert "测试曲目1" in desktop.title(), "empty refresh interrupted playing UUID"
+        desktop.close_library()
+        desktop.library()
+        time.sleep(1.2)
+        assert sum(path.startswith("/api/v2/sync") for path in fixture.requests) == sync_count + 1, "tab re-entry bypassed hourly deadline"
+        print("PASS manual refresh, unchanged materialization timestamps and hourly tab coalescing", flush=True)
         fixture.ids = ["1", "2", "3", "4"]
         fixture.revision += 1
         desktop.click(8108)

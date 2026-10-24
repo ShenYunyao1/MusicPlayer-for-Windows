@@ -89,6 +89,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Release validation regression failed' }
       - name: Native HTTP, TLS, protocol, cache and real server integration
         run: |
+            ./UnitTest/run-remote-state-tests.ps1
+            if ($LASTEXITCODE -ne 0) { throw 'Remote progress and hourly scheduler regression failed' }
           ./UnitTest/run-remote-library-cache-tests.ps1 -Python python `
             -ServerBinary '../server-source/server/build/musicserver.exe' `
             -ServerSource '../server-source/server' `

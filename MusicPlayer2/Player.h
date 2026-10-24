@@ -177,6 +177,7 @@ private:
     bool m_file_opend{ false };             //如果打开了一个文件，则为true
     std::shared_ptr<RemoteLibraryTask> m_remote_task;
     bool m_remote_open_ready{}, m_remote_want_play{}, m_remote_skipping{};
+    bool m_remote_queue_invalidated{};
     std::set<int> m_remote_failed;
     wstring m_remote_status;
     void SkipRemoteFailure(const wstring& reason);
@@ -260,6 +261,9 @@ public:
     std::timed_mutex& GetPlayStatusMutex() { return m_play_status_sync; }
     // Called by the main window timer while holding the playback mutex.
     void ProcessRemotePlayback();
+    bool ProcessRemoteSynchronization();
+    RemoteTransferProgress DownloadProgress() const;
+    bool DownloadOnly() const;
     bool IsLoading() const { return m_loading; }
 
 public:

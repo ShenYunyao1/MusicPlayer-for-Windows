@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
 PNG2 = PNG + b"fixture second artwork"
 GIF = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")
-AUDIO = b"audio fixture verified by content hash"
+AUDIO = b"audio fixture verified by content hash" * 8192
 MODES = {
     "png": (PNG, "image/png"), "png2": (PNG2, "image/png"),
     "gif": (GIF, "image/gif"), "none": (b"", ""),
@@ -161,10 +161,13 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     page.update(full_snapshot=True, changed_tracks=[dict(self.server.track(), id="b")],
                                 playlists=[{"id": "p", "name": "Paged", "sort_order": 1,
+                                            "version": 7, "subscription_version": 9,
                                             "track_ids": ["b", "a"], "track_notes": {"a": "keep note"}},
                                            {"id": "q", "name": "First", "sort_order": 0, "track_ids": []}])
+        elif scenario == "noop":
+            assert cursor == "done-paged", "empty delta did not use committed cursor"
         elif scenario == "delta":
-            assert cursor == "done-paged", "delta did not use committed cursor"
+            assert cursor == "done-noop", "delta did not use renewed cursor"
             page.update(changed_tracks=[dict(self.server.track(), id="a", title="Updated")],
                         playlists=[{"id": "p", "name": "Renamed", "sort_order": 1,
                                     "track_ids": ["a", "b"], "track_notes": {"b": "retained"}}],

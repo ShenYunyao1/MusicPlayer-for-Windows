@@ -567,7 +567,10 @@ void CPlayer::MusicControl(Command command, int volume_step)
     // stop和close也可以在m_index失效无法播放时使用（RemoveSong(s)）
     if (command != Command::VOLUME_ADJ && command != Command::STOP && command != Command::CLOSE)
     {
-        if (!CCommon::IsURL(GetCurrentFilePath()) && !CCommon::FileExist(GetCurrentFilePath()))
+        // A refreshed remote UUID may point at its next cache while the core
+        // still owns an opened old stream. Control that stream until next OPEN.
+        if (!(remote && m_file_opend && command!=Command::OPEN) &&
+            !CCommon::IsURL(GetCurrentFilePath()) && !CCommon::FileExist(GetCurrentFilePath()))
         {
             m_error_state = ES_FILE_NOT_EXIST;
             return;
@@ -1214,6 +1217,7 @@ void CPlayer::ValidateRemotePlaylistAccess()
     m_song_length.fromInt(0);
     m_remote_failed.clear();
     m_remote_status=L"服务器歌单授权已变化，请刷新并重新选择。";
+    m_remote_queue_invalidated=true;
     OnPlaylistChange();
     AfterSetTrack();
     GetPlayStatusMutex().unlock();
@@ -1228,7 +1232,7 @@ bool CPlayer::PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& e
     // replaying the same snapshot can overwrite it with local queue edits.
     if (!BeforeIniPlayList(false)) { error = L"播放器暂时忙，稍后可重新播放歌单。"; return false; }
     std::wstring path;
-    if (!CRemoteLibraryManager::Instance().Materialize(playlist, previous_playlist_path, path, error))
+    if (!CRemoteLibraryManager::Instance().Materialize(playlist, previous_playlist_path, path, error, true))
     {
         GetPlayStatusMutex().unlock();
         m_loading = false;
@@ -1239,6 +1243,7 @@ bool CPlayer::PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& e
     m_playlist_mode = PM_PLAYLIST;
     m_sort_mode = SM_UNSORT;
     m_contain_sub_folder = false;
+    m_remote_queue_invalidated=false;
     m_index = 0;
     m_media_lib_playlist_type = {};
     m_media_lib_playlist_name.clear();
@@ -1247,6 +1252,55 @@ bool CPlayer::PlayRemotePlaylist(const RemotePlaylist& playlist, std::wstring& e
     first_song.path = RemoteLibraryConfig::Load().Client().CachePath(playlist.tracks.front());
     IniPlayList(true, {}, first_song);
     return true;
+}
+
+RemoteTransferProgress CPlayer::DownloadProgress() const
+{
+    auto& library=CRemoteLibraryManager::Instance();
+    if (!IsFileOpened())
+    {
+        auto p=library.TransferProgress(GetCurrentFilePath(),true);
+        if (p.Active()) return p;
+    }
+    return library.TransferProgress(L"",false);
+}
+
+bool CPlayer::DownloadOnly() const
+{
+    const auto p=DownloadProgress(); return !IsFileOpened() && !p.bulk && p.Active();
+}
+
+bool CPlayer::ProcessRemoteSynchronization()
+{
+    auto& library=CRemoteLibraryManager::Instance();
+    auto task=library.PollSynchronization(IsPlaylistMode() && CCommon::FileExist(m_playlist_path+L".remote.json"));
+    if (!task || *task->cancel || task->namespace_id!=RemoteLibraryConfig::Load().Client().CacheDirectory()) return false;
+    if ((!task->success || task->offline) && !task->access_blocked) return false;
+    bool changed=task->access_blocked || (IsPlaylistMode() && !library.PlaylistUsable(m_playlist_path));
+    ValidateRemotePlaylistAccess(); library.RemoveUnavailableRecentPlaylists();
+    if (task->success && !task->offline)
+        for (const auto& playlist:task->playlists)
+        {
+            if (!playlist.Available()) continue;
+            const auto paths=library.MaterializedPaths(playlist);
+            if (paths.empty()) continue;
+            const auto current=std::find(paths.begin(),paths.end(),m_playlist_path);
+            const auto target=IsPlaylistMode() && current!=paths.end() ? m_playlist_path : paths.front();
+            if (!library.NeedsMaterialize(playlist,target) &&
+                !(IsPlaylistMode() && current!=paths.end() && m_remote_queue_invalidated)) continue;
+            std::wstring error,path;
+            bool ok=IsPlaylistMode() && current!=paths.end() ? RefreshCurrentRemotePlaylist(playlist,error) : library.Materialize(playlist,target,path,error);
+            if (!ok) { theApp.WriteLog(error); continue; }
+            int duration=0; for (const auto& t:playlist.tracks) duration+=t.duration_ms;
+            CRecentList::Instance().SetPlaylistTotalInfo({LT_PLAYLIST,target},static_cast<int>(playlist.tracks.size()),duration);
+            changed=true;
+        }
+    if (changed)
+    {
+        CRecentList::Instance().SaveData();
+        CMusicPlayerCmdHelper::RefreshMediaTabData(CMusicPlayerCmdHelper::ML_PLAYLIST);
+    }
+    return changed;
 }
 
 bool CPlayer::RefreshCurrentRemotePlaylist(const RemotePlaylist& playlist, std::wstring& error)
@@ -1260,6 +1314,7 @@ bool CPlayer::RefreshCurrentRemotePlaylist(const RemotePlaylist& playlist, std::
     const bool was_playing = IsPlaying();
     std::wstring path;
     auto& library = CRemoteLibraryManager::Instance();
+    const auto current_id=library.TrackIdentity(current_path);
     if (!library.Materialize(playlist, m_playlist_path, path, error))
     {
         GetPlayStatusMutex().unlock();
@@ -1274,12 +1329,16 @@ bool CPlayer::RefreshCurrentRemotePlaylist(const RemotePlaylist& playlist, std::
         SongInfo song;
         song.file_path = RemoteLibraryConfig::Load().Client().CachePath(track);
         library.ApplyMetadata(song);
-        if (song.file_path == current_path) current_index = static_cast<int>(songs.size());
+        // Keep the opened stream and its real clock when the same UUID receives
+        // new audio. Its new cache path is used on the next open; old bytes stay intact.
+        if (!track.unavailable && ((!current_id.empty() && track.id==current_id && IsFileOpened()) || song.file_path==current_path))
+            current_index = static_cast<int>(songs.size());
         songs.push_back(std::move(song));
     }
     if (current_index < 0) MusicControl(Command::CLOSE);
     m_playlist_path = path;
     m_playlist = std::move(songs);
+    m_remote_queue_invalidated=false;
     if (m_playlist.empty()) m_playlist.push_back(SongInfo{});
     m_index = current_index < 0 ? 0 : current_index;
     m_total_time = 0;
@@ -2300,6 +2359,7 @@ int CPlayer::MoveItems(std::vector<int> indexes, int dest)
 
 void CPlayer::SeekTo(int position)
 {
+    if (DownloadOnly()) return;
     if (!m_file_opend && CRemoteLibraryManager::Instance().IsRemote(GetCurrentFilePath()))
     {
         if (m_song_length.toInt()>0) position=(std::min)(position,m_song_length.toInt());
@@ -2654,6 +2714,7 @@ void CPlayer::EnableReverb(bool enable)
 
 bool CPlayer::SetARepeatPoint()
 {
+    if (DownloadOnly()) return false;
     m_a_repeat = m_current_position;
     m_ab_repeat_mode = AM_A_SELECTED;
     return true;
@@ -2661,6 +2722,7 @@ bool CPlayer::SetARepeatPoint()
 
 bool CPlayer::SetBRepeatPoint()
 {
+    if (DownloadOnly()) return false;
     if (m_ab_repeat_mode != AM_NONE)
     {
         CPlayTime time_span = m_current_position - m_a_repeat;
@@ -2676,6 +2738,7 @@ bool CPlayer::SetBRepeatPoint()
 
 bool CPlayer::ContinueABRepeat()
 {
+    if (DownloadOnly()) return false;
     if (m_ab_repeat_mode == AM_AB_REPEAT)       //在AB重复状态下，将当前重复B点设置为下一次的重复A点
     {
         m_a_repeat = m_b_repeat;
@@ -2692,6 +2755,7 @@ bool CPlayer::ContinueABRepeat()
 
 void CPlayer::DoABRepeat()
 {
+    if (DownloadOnly()) return;
     switch (m_ab_repeat_mode)
     {
     case CPlayer::AM_NONE:

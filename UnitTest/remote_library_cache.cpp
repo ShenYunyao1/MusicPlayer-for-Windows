@@ -133,6 +133,8 @@ int wmain(int argc, wchar_t** argv)
             Require(track.id == "fixture", "fixture track parsing failed");
         };
         auto Cache = [&] { Require(client.EnsureCached(track, path, error), "optional artwork blocked audio cache"); };
+        std::vector<RemoteTransferProgress> progress;
+        client.SetProgress([&](const RemoteTransferProgress& p){progress.push_back(p);});
 
         auto Requests = [&] {
             RemoteTrack stats;
@@ -149,6 +151,20 @@ int wmain(int argc, wchar_t** argv)
         Require(Requests()==before,"local-only cache miss sent HTTP");
         Require(track.cover_mime == "image/png" && track.cover_source == "external", "cover metadata not parsed");
         Cache();
+        Require(progress.front().phase==RemoteTransferPhase::Checking && progress.back().phase==RemoteTransferPhase::Ready,
+            "audio transfer stages missing");
+        unsigned long long last_bytes=0; unsigned chunks=0; bool downloaded=false,verified=false;
+        for (const auto& p:progress)
+        {
+            if (p.phase==RemoteTransferPhase::Downloading)
+            {
+                Require(p.bytes>=last_bytes && p.total==track.size && p.bytes<=p.total,"invalid audio byte progress");
+                if (p.bytes>last_bytes) ++chunks;
+                last_bytes=p.bytes; downloaded=true;
+            }
+            if (p.phase==RemoteTransferPhase::Verifying) verified=true;
+        }
+        Require(downloaded && verified && last_bytes==track.size && chunks>=2,"download chunks or verification missing");
         VerifyCover(path, L".png", track.cover_id);
         auto lyrics = std::filesystem::path(path);
         lyrics.replace_extension(L".lrc");
@@ -162,6 +178,7 @@ int wmain(int argc, wchar_t** argv)
         auto other=track; other.content_hash=CRemoteLibraryClient::HashString("other");
         client.SetCancellation(cancel);
         Require(!client.EnsureCached(other,path,error),"cancelled miss succeeded");
+        Require(progress.back().phase==RemoteTransferPhase::Cancelled,"cancelled progress remained active");
         client.SetCancellation({});
         Require(Requests()==before,"cancelled cache miss sent HTTP");
         Cache();
@@ -237,12 +254,17 @@ int wmain(int argc, wchar_t** argv)
         Require(Sync("case-paged") && !offline, "paged reset snapshot failed");
         Require(playlists.size()==2 && playlists[0].id=="q" && playlists[1].id=="p", "playlist ordering lost");
         auto p=playlists[1];
+        Require(p.version==7 && p.subscription_version==9 && !p.fingerprint.empty(),"playlist versions/fingerprint lost");
         Require(p.track_ids==std::vector<std::string>({"b","a"}) && p.tracks.size()==2 &&
             p.track_notes.at("a")==L"keep note", "cross-page members, order or notes lost");
         Require(client.CachePath(p.tracks[0])!=client.CachePath(p.tracks[1]), "UUIDs collapsed by matching content hash");
+        const auto prior_cursor=Read(snapshot);
+        Require(Sync("case-noop") && playlists[1].fingerprint==p.fingerprint,"cursor renewal changed content fingerprint");
+        Require(Read(snapshot)!=prior_cursor,"empty delta did not renew persisted cursor");
         Require(Sync("case-delta") && playlists.size()==1 && playlists[0].name==L"Renamed", "delta playlist upsert/delete failed");
         Require(playlists[0].tracks[0].title==L"Updated" && playlists[0].tracks[1].unavailable &&
             playlists[0].track_notes.at("b")==L"retained", "delta tombstone lost member or note");
+        Require(playlists[0].fingerprint!=p.fingerprint,"content changes did not change fingerprint");
         std::wstring ignored;
         before=Requests();
         Require(!client.EnsureCached(playlists[0].tracks[1],ignored,error), "unavailable member downloaded");

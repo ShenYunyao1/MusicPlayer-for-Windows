@@ -14,6 +14,7 @@ namespace UiElement
         virtual bool MouseLeave() override;
         virtual void HideTooltip() override;
         virtual bool LButtonUp(CPoint point) override;
+        virtual bool LButtonDown(CPoint point) override;
         virtual bool SetCursor() override;
 
         virtual COLORREF GetBackColor(bool highlight_color) override;

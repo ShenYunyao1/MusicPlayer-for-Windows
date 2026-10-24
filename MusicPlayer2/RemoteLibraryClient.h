@@ -5,6 +5,8 @@
 #include <map>
 #include <atomic>
 #include <memory>
+#include <functional>
+#include "RemoteLibraryState.h"
 
 struct RemoteTrack
 {
@@ -29,6 +31,8 @@ struct RemoteTrack
 
 struct RemotePlaylist
 {
+    std::string fingerprint;
+    unsigned long long version{}, subscription_version{};
     std::string id;
     std::wstring name;
     std::wstring description;
@@ -70,6 +74,8 @@ public:
     bool AccessBlocked() const;
     bool PlaylistAllowed(const std::string& id) const;
     bool TrackAllowed(const RemoteTrack& track) const;
+    bool CacheValid(const RemoteTrack& track) const;
+    void SetProgress(std::function<void(const RemoteTransferProgress&)> observer) { m_progress = std::move(observer); }
     static std::string HashString(const std::string& value);
     void SetCancellation(std::shared_ptr<std::atomic<bool>> cancel) { m_cancel = std::move(cancel); }
 
@@ -86,4 +92,7 @@ private:
     mutable bool m_transport_failed{};
     mutable unsigned long m_http_status{};
     mutable std::string m_error_code;
+    std::function<void(const RemoteTransferProgress&)> m_progress;
+    mutable RemoteTransferProgress m_transfer;
+    void Report(RemoteTransferPhase phase, unsigned long long bytes = 0, double speed = 0) const;
 };

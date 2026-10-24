@@ -4,6 +4,11 @@
 
 void UiElement::SliderProgressBar::Draw()
 {
+    if (CPlayer::GetInstance().DownloadOnly())
+    {
+        pressed=false; rect_handle.SetRectEmpty(); CalculateRect();
+        ui->DrawProgess(rect); Element::Draw(); return;
+    }
     //设置进度条的位置
     SetRange(0, CPlayer::GetInstance().GetSongLength());
     if (!pressed)
@@ -13,12 +18,14 @@ void UiElement::SliderProgressBar::Draw()
 
     //绘制AB重复标记
     ui->DrawABRepeat(rect);
+    ui->DrawDownloadOverlay(GetBackRect());
 }
 
 void UiElement::SliderProgressBar::InitComplete()
 {
     Slider::InitComplete();
     SetDragFinishTrigger([this](UiElement::Slider* sender) {
+        if (CPlayer::GetInstance().DownloadOnly()) return;
         int progress = sender->GetCurPos();
         if (CPlayer::GetInstance().GetPlayStatusMutex().try_lock_for(std::chrono::milliseconds(1000)))
         {
@@ -30,7 +37,25 @@ void UiElement::SliderProgressBar::InitComplete()
 
 bool UiElement::SliderProgressBar::MouseMove(CPoint point)
 {
+    const auto transfer=ui->DownloadTooltip();
+    if (CPlayer::GetInstance().DownloadOnly())
+    {
+        pressed=false;
+        if (rect.PtInRect(point))
+        {
+            ui->UpdateMouseToolTip(UiElement::TooltipIndex::PROGRESS_BAR,transfer.c_str());
+            ui->UpdateMouseToolTipPosition(UiElement::TooltipIndex::PROGRESS_BAR,rect);
+        }
+        else HideTooltip();
+        return rect.PtInRect(point);
+    }
     Slider::MouseMove(point);
+    if (!transfer.empty() && rect.PtInRect(point))
+    {
+        ui->UpdateMouseToolTip(UiElement::TooltipIndex::PROGRESS_BAR,transfer.c_str());
+        ui->UpdateMouseToolTipPosition(UiElement::TooltipIndex::PROGRESS_BAR,rect);
+        return true;
+    }
     progress_hover = rect.PtInRect(point) && !rect_handle.PtInRect(point);    //鼠标在进度条但是不在把手上悬停
     if (progress_hover || Slider::pressed)
     {
@@ -73,6 +98,7 @@ void UiElement::SliderProgressBar::HideTooltip()
 
 bool UiElement::SliderProgressBar::LButtonUp(CPoint point)
 {
+    if (CPlayer::GetInstance().DownloadOnly()) { pressed=false; return rect.PtInRect(point); }
     if (Slider::LButtonUp(point))
         return true;
     if (rect.PtInRect(point) && !rect_handle.PtInRect(point))    //点击了进度条但是不在把手上
@@ -90,9 +116,15 @@ bool UiElement::SliderProgressBar::LButtonUp(CPoint point)
     return false;
 }
 
+bool UiElement::SliderProgressBar::LButtonDown(CPoint point)
+{
+    if (CPlayer::GetInstance().DownloadOnly()) { pressed=false; return rect.PtInRect(point); }
+    return Slider::LButtonDown(point);
+}
+
 bool UiElement::SliderProgressBar::SetCursor()
 {
-    if (progress_hover && !Slider::pressed)
+    if (progress_hover && !Slider::pressed && !CPlayer::GetInstance().DownloadOnly())
     {
         ::SetCursor(::LoadCursor(NULL, IDC_HAND));
         return true;

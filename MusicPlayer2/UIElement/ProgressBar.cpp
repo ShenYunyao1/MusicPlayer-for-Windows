@@ -19,6 +19,7 @@ void UiElement::ProgressBar::Draw()
 
 bool UiElement::ProgressBar::LButtonUp(CPoint point)
 {
+    if (CPlayer::GetInstance().DownloadOnly()) return btn.rect.PtInRect(point);
     if (hover() && btn.rect.PtInRect(point))
     {
         int ckick_pos = point.x - btn.rect.left;
@@ -54,6 +55,13 @@ bool UiElement::ProgressBar::MouseMove(CPoint point)
     //鼠标指向进度条时显示定位到几分几秒
     if (btn.hover)
     {
+        const auto transfer=ui->DownloadTooltip();
+        if (!transfer.empty())
+        {
+            ui->UpdateMouseToolTip(UiElement::TooltipIndex::PROGRESS_BAR,transfer.c_str());
+            ui->UpdateMouseToolTipPosition(UiElement::TooltipIndex::PROGRESS_BAR,btn.rect);
+            return false;
+        }
         __int64 song_pos;
         song_pos = static_cast<__int64>(point.x -btn.rect.left) * CPlayer::GetInstance().GetSongLength() /btn.rect.Width();
         CPlayTime song_pos_time;
@@ -80,7 +88,7 @@ bool UiElement::ProgressBar::MouseLeave()
 
 bool UiElement::ProgressBar::SetCursor()
 {
-    if (hover())
+    if (hover() && !CPlayer::GetInstance().DownloadOnly())
     {
         ::SetCursor(::LoadCursor(NULL, IDC_HAND));
         return true;

@@ -59,6 +59,7 @@ void CServerSettingsDlg::GetDataFromUi()
     if (!config.Save(error)) AfxMessageBox((L"保存服务器配置失败：" + error).c_str());
     else
     {
+        CRemoteLibraryManager::Instance().ConfigurationChanged();
         CPlayer::GetInstance().ValidateRemotePlaylistAccess();
         CRemoteLibraryManager::Instance().RemoveUnavailableRecentPlaylists();
     }

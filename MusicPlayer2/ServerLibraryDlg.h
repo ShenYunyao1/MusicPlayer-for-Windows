@@ -12,7 +12,7 @@ public:
     CServerLibraryDlg() : CTabDlg(IDD_SERVER_LIBRARY) {}
     BOOL OnInitDialog() override;
     void OnTabEntered() override;
-    void OnTabExited() override { SaveState(); }
+    void OnTabExited() override { SaveState(); CRemoteLibraryManager::Instance().SetBrowserActive(false); }
     void OnOK() override;
 protected:
     DECLARE_MESSAGE_MAP()
@@ -27,7 +27,7 @@ protected:
     afx_msg void OnTimer(UINT_PTR);
 private:
     void UpdateButtons();
-    void RenderPlaylists();
+    void RenderPlaylists(bool render_tracks = true);
     void RenderTracks();
     void SaveState();
     bool HasPlaylist() const;
@@ -36,8 +36,10 @@ private:
     CListCtrl m_track_list;
     std::vector<RemotePlaylist> m_playlists;
     std::shared_ptr<RemoteLibraryTask> m_library_task, m_offline_task;
+    std::shared_ptr<RemoteLibraryTask> m_seen_task;
     std::wstring m_loaded_namespace;
     RemoteBrowseState m_state;
+    std::vector<std::string> m_rendered_tracks;
     bool m_rendering{};
     int m_selected_playlist{-1};
 };
