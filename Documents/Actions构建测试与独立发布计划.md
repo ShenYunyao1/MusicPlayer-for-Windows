@@ -41,6 +41,8 @@
 
 ## 本地验收记录
 
+2026-10-25：增加 `latest-server` 作业，保留 `client-release.json` 中固定的 0.16.2／schema 7 基线，另检出 MusicServer 的 main，用真实 Windows 原生客户端运行 HTTP／TLS、缓存和服务器集成。构建时记录实际两端 SHA 和服务器版本，不连接生产实例。正式 Release 同时依赖固定基线和最新候选作业；固定基线不因最新测试自动变化。服务器发行侧另用已验收的播放器提交 `33da837016e01419db3200bb0adcc58aae179c56` 联调本次服务器候选。Actions actionlint 语法检查通过；远程执行待本轮授权推送。此次客户端只改 CI，无需重复发布未改变的 0.3.1 二进制。
+
 2026-10-24：actionlint 1.7.7、工作流 YAML 与发布权限／依赖检查通过；Python 发布门禁测试通过；当前实际 ZIP 的白名单、架构、默认配置、SHA-256、提交号及发行身份检查通过，现有打包污染／缺失／错误架构回归也通过。真实服务集成通过首次改密、分页、媒体校验、下架／恢复、停用／启用、订阅失效／恢复、指定账户接受／撤回／重邀，以及服务中断后的离线恢复。
 
 构建环境依据 [Windows 2022 运行器清单](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)，发布权限与作业依赖依据 [GitHub Actions 工作流语法](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)。运行时仍检查 VS 2022 MFC 是否存在，缺失时明确失败。
