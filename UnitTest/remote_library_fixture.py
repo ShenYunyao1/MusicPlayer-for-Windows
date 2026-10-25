@@ -37,6 +37,7 @@ class FixtureServer(ThreadingHTTPServer):
     requests = 0
     scenario = ""
     sync_calls = 0
+    object_batches = []
 
     def __init__(self, *args):
         super().__init__(*args)
@@ -97,9 +98,19 @@ class Handler(BaseHTTPRequestHandler):
         self.server.requests += 1
         if path.path == "/api/v2/tracks/fixture":
             mode = parse_qs(path.query).get("mode", ["png"])[0]
+            expected_batches = {"object-initial": [["a", "b"]], "object-add": [["c"]],
+                                "object-order": [], "object-remove": [], "object-metadata": [["a"]],
+                                "object-service": [["a"]], "object-denied": [["a"]],
+                                "object-restart-network": [["a"]],
+                                "object-revoked": []}
+            if self.server.scenario in expected_batches:
+                assert self.server.object_batches == expected_batches[self.server.scenario], (self.server.scenario, self.server.object_batches)
+            if self.server.scenario == "object-fail":
+                assert [len(batch) for batch in self.server.object_batches] == [100, 1]
             if mode.startswith("case-"):
                 self.server.scenario = mode[5:]
                 self.server.sync_calls = 0
+                self.server.object_batches = []
                 return self.reply(self.server.track())
             self.server.scenario = ""
             if mode == "stop":
@@ -131,13 +142,59 @@ class Handler(BaseHTTPRequestHandler):
             })
         self.reply({}, 404)
 
+    def do_POST(self):
+        if self.headers.get("X-API-Key") != "fixture-key":
+            self.server.auth_failures += 1
+            return self.reply({}, 401)
+        if urlsplit(self.path).path != "/api/v2/sync/tracks":
+            return self.reply({}, 404)
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        ids = body["ids"]
+        assert 0 < len(ids) <= 100 and len(set(ids)) == len(ids)
+        assert body["cursor"] == "done-" + self.server.scenario
+        self.server.object_batches.append(ids)
+        if self.server.scenario == "object-restart-network":
+            return self.reply({"error": {"code": "SYNC_RESTART"}}, 409)
+        if self.server.scenario in ("object-service", "object-denied"):
+            return self.reply({"error": {"code": "FAIL"}}, 503 if self.server.scenario == "object-service" else 404)
+        if self.server.scenario == "object-fail" and len(self.server.object_batches) == 2:
+            return self.reply({"error": {"code": "FAIL"}}, 503)
+        title = "Object metadata" if self.server.scenario == "object-metadata" else "fixture"
+        return self.reply({"revision": 100, "tracks": [dict(self.server.track(), id=id, title=title) for id in ids]})
+
     def protocol_page(self, cursor):
         scenario = self.server.scenario
         self.server.sync_calls += 1
         calls = self.server.sync_calls
+        if scenario in ("object-restart-network", "sync-restart-network") and calls > 1:
+            self.connection.close()
+            return
+        if scenario == "sync-restart-network":
+            return self.reply({"error": {"code": "SYNC_RESTART"}}, 409)
         page = {"revision": 100, "full_snapshot": False, "reset": False,
                 "cursor": "done-" + scenario, "has_more": False,
                 "changed_tracks": [], "playlists": []}
+        if scenario.startswith("object-"):
+            assert parse_qs(urlsplit(self.path).query).get("protocol") == ["2"]
+            page["object_delta"] = True
+            if scenario == "object-initial":
+                page.update(reset=True, full_snapshot=True, changed_track_ids=["a", "b"],
+                            playlists=[{"id": "p", "name": "Object", "track_ids": ["a"]},
+                                       {"id": "q", "name": "Shared", "track_ids": ["b"]}])
+            elif scenario == "object-add":
+                page["playlists"] = [{"id": "p", "name": "Object", "track_ids": ["a", "c"]}]
+            elif scenario == "object-order":
+                page["playlists"] = [{"id": "p", "name": "Object", "track_ids": ["c", "a"]}]
+            elif scenario == "object-remove":
+                page["playlists"] = [{"id": "p", "name": "Object", "track_ids": ["a"]}]
+            elif scenario in ("object-metadata", "object-service", "object-denied", "object-restart-network"):
+                page["changed_track_ids"] = ["a"]
+            elif scenario == "object-fail":
+                page.update(reset=True, full_snapshot=True,
+                            playlists=[{"id": "p", "name": "Failure", "track_ids": ["fail" + str(i) for i in range(101)]}])
+            elif scenario == "object-revoked":
+                page.update(reset=True, full_snapshot=True)
+            return self.reply(page)
         if scenario in ("unauthorized", "forbidden", "limited"):
             return self.reply({"error": {"code": "DENIED"}},
                               {"unauthorized": 401, "forbidden": 403, "limited": 429}[scenario])

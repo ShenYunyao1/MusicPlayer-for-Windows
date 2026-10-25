@@ -271,13 +271,15 @@ int wmain(int argc, wchar_t** argv)
         Require(Requests()==before, "unavailable member sent HTTP");
         Require(Sync("case-restore") && !playlists[0].tracks[1].unavailable, "delta restoration failed");
         const auto committed=Read(snapshot);
-        for (const auto mode : {"case-bad-last","case-bad-json","case-cycle","case-restart-always","case-limited"})
+        for (const auto mode : {"case-bad-last","case-bad-json","case-cycle","case-limited"})
         {
             Require(!Sync(mode) && !offline, "protocol or HTTP failure treated as offline success");
             Require(Read(snapshot)==committed, "failed pagination changed committed snapshot/cursor");
         }
         Require(Sync("case-network-last") && offline, "mid-page network outage did not use committed snapshot");
         Require(Read(snapshot)==committed && playlists[0].tracks[0].title==L"Updated", "partial page leaked into offline snapshot");
+        Require(!Sync("case-restart-always") && !offline && Read(snapshot)==committed && client.AccessBlocked(), "exhausted cursor restarts did not block the old authorization");
+        Require(!client.SyncLibrary(playlists,offline,error,true), "exhausted cursor restarts revived the old snapshot offline");
         Require(Sync("case-restart") && playlists.size()==2, "bounded snapshot restart failed");
         for (const auto mode : {"case-unauthorized","case-forbidden"})
         {
@@ -290,6 +292,28 @@ int wmain(int argc, wchar_t** argv)
         }
         Require(Sync("case-empty") && playlists.empty(), "empty grants did not reset old library");
         Require(!client.TrackAllowed(p.tracks[0]) && !client.PlaylistAllowed("p"), "old granted entry remained usable after reset");
+        Require(Sync("case-object-initial") && playlists.size()==2, "object snapshot failed");
+        Require(Sync("case-object-add") && playlists[0].track_ids==std::vector<std::string>({"a","c"}), "object member addition failed");
+        Require(Sync("case-object-order") && playlists[0].track_ids==std::vector<std::string>({"c","a"}), "object member order failed");
+        Require(Sync("case-object-remove") && playlists[0].tracks.size()==1, "object member removal failed");
+        auto object_saved=nlohmann::json::parse(Read(snapshot));
+        Require(object_saved["changed_tracks"].size()==2, "object pruning lost another playlist union or retained removed member");
+        Require(Sync("case-object-metadata") && playlists[0].tracks[0].title==L"Object metadata", "object metadata resolution failed");
+        const auto object_committed=Read(snapshot);
+        Require(!Sync("case-object-service") && Read(snapshot)==object_committed && !client.AccessBlocked(), "503 changed the committed cache or blocked authorization");
+        Require(client.SyncLibrary(playlists,offline,error,true), "503 disabled the valid offline snapshot");
+        for (const auto mode : {"case-object-restart-network", "case-sync-restart-network"})
+        {
+            Require(!Sync(mode) && !offline && Read(snapshot)==object_committed && client.AccessBlocked(), "409 followed by a retry outage revived the prior authorization snapshot");
+            Require(!client.SyncLibrary(playlists,offline,error,true), "409 denial did not persist for offline reads");
+            Require(Sync("case-object-metadata") && !client.AccessBlocked(), "complete object sync failed to revalidate after a restart outage");
+        }
+        Require(!Sync("case-object-denied") && Read(snapshot)==object_committed && client.AccessBlocked(), "404 batch denial failed to block old authorization");
+        Require(!client.SyncLibrary(playlists,offline,error,true), "404 batch denial revived old data offline");
+        Require(Sync("case-object-metadata") && !client.AccessBlocked(), "complete object sync failed to revalidate denied key");
+        Require(!Sync("case-object-fail") && Read(snapshot)==object_committed, "failed second batch published a partial snapshot/cursor");
+        Require(client.AccessBlocked() && !client.SyncLibrary(playlists,offline,error,true), "failed reset revived old authorization offline");
+        Require(Sync("case-object-revoked") && playlists.empty() && !client.AccessBlocked(), "object grant reset retained old data");
         cancel=std::make_shared<std::atomic<bool>>(true);
         before=Requests();
         client.SetCancellation(cancel);

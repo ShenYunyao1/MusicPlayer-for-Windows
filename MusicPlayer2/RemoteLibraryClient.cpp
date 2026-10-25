@@ -321,6 +321,8 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
                 }
                 std::string cursor = saved.is_object() && attempt == 0 ? saved.value("cursor", "") : "";
                 std::set<std::string> seen;
+                std::set<std::string> changed_ids;
+                bool object_delta = false;
                 bool restart = false;
                 for (int page = 0; page < 10000; ++page)
                 {
@@ -333,9 +335,11 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
                         else { encoded += L'%'; encoded += L"0123456789ABCDEF"[c >> 4]; encoded += L"0123456789ABCDEF"[c & 15]; }
                     }
                     std::string response;
-                    if (!Request(L"/api/v2/sync?limit=100" + (cursor.empty() ? L"" : L"&cursor=" + encoded), response, error_message))
+                    if (!Request(L"/api/v2/sync?protocol=2&limit=100" + (cursor.empty() ? L"" : L"&cursor=" + encoded), response, error_message))
                     {
-                        if (m_http_status == 409 && m_error_code == "SYNC_RESTART") { restart = true; break; }
+                        // A cursor restart can mean revoked grants. A later
+                        // transport failure must not revive the old snapshot.
+                        if (m_http_status == 409 && m_error_code == "SYNC_RESTART") { BlockAccess(); restart = true; break; }
                         if (m_http_status == 401 || m_http_status == 403) BlockAccess();
                         if (m_transport_failed && valid(saved) && !AccessBlocked() && !(m_cancel && *m_cancel))
                         { offline = true; snapshot = saved; completed = true; break; }
@@ -346,8 +350,16 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
                         !data.contains("playlists") || !data["playlists"].is_array() ||
                         !data.contains("cursor") || !data["cursor"].is_string() || data["cursor"].get<std::string>().empty())
                         throw std::runtime_error("invalid v2 sync page");
+                    if (page == 0) object_delta = data.value("object_delta", false);
+                    else if (object_delta != data.value("object_delta", false)) throw std::runtime_error("sync protocol changed during pagination");
                     if (page == 0 && (data.value("reset", false) || data.value("full_snapshot", false)))
-                    { tracks.clear(); lists.clear(); }
+                    {
+                        tracks.clear(); lists.clear();
+                        // Once the server invalidates an object cursor, the old
+                        // authorization snapshot must not reappear offline if a
+                        // later page or track batch fails. Success clears this marker.
+                        if (object_delta && valid(saved)) BlockAccess();
+                    }
                     if (page > 0 && data.value("reset", false)) throw std::runtime_error("reset inside pagination");
                     for (const auto& t : data["changed_tracks"])
                     {
@@ -363,11 +375,67 @@ bool CRemoteLibraryClient::SyncLibrary(std::vector<RemotePlaylist>& playlists, b
                     }
                     for (const auto& id : data.value("deleted_tracks", json::array())) tracks.erase(id.get<std::string>());
                     for (const auto& id : data.value("deleted_playlists", json::array())) lists.erase(id.get<std::string>());
+                    if (object_delta)
+                        for (const auto& value : data.value("changed_track_ids", json::array()))
+                        {
+                            const auto id = value.get<std::string>();
+                            if (!ValidId(id)) throw std::runtime_error("invalid changed track UUID");
+                            changed_ids.insert(id);
+                        }
                     cursor = data.at("cursor").get<std::string>();
                     if (data.value("has_more", false))
                     {
                         if (!seen.insert(cursor).second) throw std::runtime_error("repeated sync cursor");
                         continue;
+                    }
+                    if (object_delta)
+                    {
+                        std::set<std::string> referenced, readable;
+                        for (const auto& entry : lists)
+                        {
+                            const auto& p = entry.second;
+                            const auto status = p.value("subscription_status", "");
+                            if (!status.empty() && status != "active") continue;
+                            const auto unavailable = p.value("unavailable_track_ids", std::vector<std::string>{});
+                            for (const auto& id : p.value("track_ids", std::vector<std::string>{}))
+                            {
+                                if (!ValidId(id)) throw std::runtime_error("invalid member UUID");
+                                referenced.insert(id);
+                                if (std::find(unavailable.begin(), unavailable.end(), id) == unavailable.end()) readable.insert(id);
+                            }
+                        }
+                        for (auto it = tracks.begin(); it != tracks.end();)
+                            if (!referenced.count(it->first) || !readable.count(it->first)) it = tracks.erase(it); else ++it;
+                        std::vector<std::string> missing;
+                        for (const auto& id : readable)
+                            if (!tracks.count(id) || changed_ids.count(id)) missing.push_back(id);
+                        for (size_t offset = 0; offset < missing.size(); offset += 100)
+                        {
+                            const auto end = (std::min)(offset + 100, missing.size());
+                            const std::vector<std::string> ids(missing.begin() + offset, missing.begin() + end);
+                            const json payload = {{"cursor",cursor},{"ids",ids}};
+                            if (!Request(L"/api/v2/sync/tracks", response, error_message, payload.dump()))
+                            {
+                                if (m_http_status == 409 && m_error_code == "SYNC_RESTART") { BlockAccess(); restart = true; break; }
+                                if (m_http_status == 401 || m_http_status == 403 || m_http_status == 404) BlockAccess();
+                                if (m_transport_failed && valid(saved) && !AccessBlocked() && !(m_cancel && *m_cancel))
+                                { offline = true; snapshot = saved; completed = true; break; }
+                                return false;
+                            }
+                            const auto resolved = json::parse(response);
+                            if (!resolved.is_object() || resolved.at("revision") != data.at("revision") ||
+                                !resolved.at("tracks").is_array() || resolved["tracks"].size() != ids.size())
+                                throw std::runtime_error("invalid track batch");
+                            std::set<std::string> expected(ids.begin(), ids.end());
+                            for (const auto& t : resolved["tracks"])
+                            {
+                                const auto id = t.at("id").get<std::string>();
+                                if (!expected.erase(id)) throw std::runtime_error("unexpected track batch UUID");
+                                tracks[id] = t;
+                            }
+                            if (!expected.empty()) throw std::runtime_error("incomplete track batch");
+                        }
+                        if (restart || completed) break;
                     }
                     snapshot = {{"cache_schema",3},{"revision",data.at("revision")},{"cursor",cursor},
                         {"changed_tracks",json::array()},{"playlists",json::array()}};
@@ -653,12 +721,12 @@ void CRemoteLibraryClient::EnsureCoverCached(const RemoteTrack& track, const std
         std::filesystem::copy_file(asset, sidecar, std::filesystem::copy_options::overwrite_existing, file_error);
 }
 
-bool CRemoteLibraryClient::Request(const std::wstring& path, std::string& response, std::wstring& error_message) const
+bool CRemoteLibraryClient::Request(const std::wstring& path, std::string& response, std::wstring& error_message, const std::string& body) const
 {
-    return Download(path, response, error_message);
+    return Download(path, response, error_message, L"", 16 * 1024 * 1024, body);
 }
 
-bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& response, std::wstring& error_message, const std::wstring& destination, unsigned __int64 maximum) const
+bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& response, std::wstring& error_message, const std::wstring& destination, unsigned __int64 maximum, const std::string& body) const
 {
     m_transport_failed = false;
     m_http_status = 0;
@@ -710,7 +778,7 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
     }
     const std::wstring prefix(urlPath, components.dwUrlPathLength);
     const std::wstring requestPath = prefix + (path.empty() || path.front() == L'/' ? path : L"/" + path);
-    HINTERNET request = WinHttpOpenRequest(connection, L"GET", requestPath.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
+    HINTERNET request = WinHttpOpenRequest(connection, body.empty() ? L"GET" : L"POST", requestPath.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
     if (request == nullptr)
     {
         error_message = WinHttpError(L"创建 HTTP 请求", GetLastError());
@@ -719,11 +787,13 @@ bool CRemoteLibraryClient::Download(const std::wstring& path, std::string& respo
         return false;
     }
     std::wstring headers = L"Accept: application/json, audio/*, image/*\r\n";
+    if (!body.empty()) headers += L"Content-Type: application/json\r\n";
     DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
     WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy, sizeof(redirect_policy));
     if (!m_api_key.empty())
         headers += L"X-API-Key: " + Utf8ToWide(m_api_key) + L"\r\n";
-    bool success = WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(headers.size()), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) == TRUE;
+    bool success = WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(headers.size()),
+        body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char*>(body.data()), static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0) == TRUE;
     if (success)
         success = WinHttpReceiveResponse(request, nullptr) == TRUE;
     DWORD status = 0;

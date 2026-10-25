@@ -80,8 +80,8 @@ public:
     void SetCancellation(std::shared_ptr<std::atomic<bool>> cancel) { m_cancel = std::move(cancel); }
 
 private:
-    bool Request(const std::wstring& path, std::string& response, std::wstring& error_message) const;
-    bool Download(const std::wstring& path, std::string& response, std::wstring& error_message, const std::wstring& destination = L"", unsigned __int64 maximum = 16 * 1024 * 1024) const;
+    bool Request(const std::wstring& path, std::string& response, std::wstring& error_message, const std::string& body = "") const;
+    bool Download(const std::wstring& path, std::string& response, std::wstring& error_message, const std::wstring& destination = L"", unsigned __int64 maximum = 16 * 1024 * 1024, const std::string& body = "") const;
     void EnsureCoverCached(const RemoteTrack& track, const std::wstring& cached_path, bool allow_network, bool apply_to_audio) const;
     void BlockAccess() const;
 
