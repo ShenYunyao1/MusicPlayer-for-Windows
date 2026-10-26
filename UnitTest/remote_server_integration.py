@@ -38,8 +38,25 @@ class Account:
     def __init__(self, base):
         self.base, self.csrf = base, ""
         self.http = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self.account_policy_available = None
 
     def call(self, path, method="GET", body=None, version=None):
+        # This is administrator fixture provisioning, not a native player API.
+        # New servers require an explicit quota; old pinned baselines reject
+        # unknown creation fields. Probe the public capability once per fixture.
+        if path == "admin/users" and method == "POST" and isinstance(body, dict):
+            if self.account_policy_available is None:
+                try:
+                    config = self.call("registration/config")
+                    self.account_policy_available = isinstance(config, dict) and "mail_ready" in config
+                except urllib.error.HTTPError as error:
+                    if error.code not in (401, 404):
+                        raise
+                    self.account_policy_available = False
+            if self.account_policy_available:
+                body = dict(body)
+                body.setdefault("quota_bytes", 0)
+                body.setdefault("email_verification_required", False)
         headers = {"Origin": self.base, "X-CSRF-Token": self.csrf, "Content-Type": "application/json"}
         if version is not None:
             headers["If-Match"] = str(version)
